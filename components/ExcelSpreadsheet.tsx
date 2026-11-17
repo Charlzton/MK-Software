@@ -73,13 +73,15 @@ export interface ExcelSpreadsheetProps {
   onDismissImportNotice?: () => void;
 }
 
-const ROW_HEADER_COL_WIDTH = 48;
-const DEFAULT_COL_WIDTH = 110;
+const ROW_HEADER_COL_WIDTH = 50;
+const CELL_GUTTER = 2;
+const DEFAULT_COL_WIDTH = 112;
 const MIN_COL_WIDTH = 56;
 const MAX_COL_WIDTH = 600;
-const DEFAULT_DATA_ROW_HEIGHT = 28;
-const DEFAULT_HEADER_ROW_HEIGHT = 34;
-const MIN_ROW_HEIGHT = 24;
+const DEFAULT_DATA_ROW_HEIGHT = 32;
+const DEFAULT_HEADER_ROW_HEIGHT = 38;
+const DEFAULT_COL_LETTER_ROW_HEIGHT = 26;
+const MIN_ROW_HEIGHT = 26;
 const MAX_ROW_HEIGHT = 320;
 const MAX_COLS_LIMIT = 256;
 
@@ -106,54 +108,62 @@ function getAlignmentClass(align: 'left' | 'center' | 'right'): string {
 function getClinicalHeaderClasses(
   category: ClinicalColumnCategory,
   isSelected: boolean,
+  isDirty: boolean,
   isDoctorWorkspace: boolean
 ): string {
   if (isSelected) {
-    return 'bg-[#cfe0f5] text-slate-900 dark:bg-sky-900/70 dark:text-sky-100';
+    return 'bg-[var(--col-title-selected)] text-[var(--col-title-text)]';
+  }
+  if (isDirty) {
+    return 'bg-amber-50 text-slate-900 dark:bg-[#574f38] dark:text-[#f5f5f5]';
   }
   if (!isDoctorWorkspace) {
-    return 'bg-[#e3ebf6] text-slate-900 dark:bg-slate-800 dark:text-slate-100';
+    return 'bg-[var(--col-title-bg)] hover:bg-[var(--col-title-hover)] text-[var(--col-title-text)]';
   }
   switch (category) {
     case 'patient_id':
-      return 'bg-sky-50 text-slate-900 border-t-2 border-t-sky-600 dark:bg-sky-950/75 dark:text-sky-100 dark:border-t-sky-400';
+      return 'bg-[#e8f1fb] hover:bg-[#dce9f9] text-[#0f172a] dark:bg-[#354454] dark:hover:bg-[#3e4f62] dark:text-[#ececec]';
     case 'prescription':
-      return 'bg-indigo-50 text-slate-900 border-t-2 border-t-indigo-600 dark:bg-indigo-950/75 dark:text-indigo-100 dark:border-t-indigo-400';
+      return 'bg-[#eceefb] hover:bg-[#e1e4f9] text-[#0f172a] dark:bg-[#3c3e54] dark:hover:bg-[#464862] dark:text-[#ececec]';
     case 'clinical_finding':
-      return 'bg-teal-50 text-slate-900 border-t-2 border-t-teal-600 dark:bg-teal-950/75 dark:text-teal-100 dark:border-t-teal-400';
+      return 'bg-[#e6f3f1] hover:bg-[#d9ece9] text-[#0f172a] dark:bg-[#314745] dark:hover:bg-[#3a5451] dark:text-[#ececec]';
     case 'medication_treatment':
-      return 'bg-emerald-50 text-slate-900 border-t-2 border-t-emerald-600 dark:bg-emerald-950/75 dark:text-emerald-100 dark:border-t-emerald-400';
+      return 'bg-[#e8f4ec] hover:bg-[#dbede2] text-[#0f172a] dark:bg-[#32463a] dark:hover:bg-[#3b5244] dark:text-[#ececec]';
     case 'surgery':
-      return 'bg-rose-50 text-slate-900 border-t-2 border-t-rose-600 dark:bg-rose-950/75 dark:text-rose-100 dark:border-t-rose-400';
+      return 'bg-[#fae9ec] hover:bg-[#f6dce1] text-[#0f172a] dark:bg-[#4b353b] dark:hover:bg-[#583f46] dark:text-[#ececec]';
     default:
-      return 'bg-[#e3ebf6] text-slate-900 dark:bg-slate-800 dark:text-slate-100';
+      return 'bg-[var(--col-title-bg)] hover:bg-[var(--col-title-hover)] text-[var(--col-title-text)]';
   }
 }
 
 function getClinicalCellBgClass(
   category: ClinicalColumnCategory,
   isSelected: boolean,
+  isDirty: boolean,
   isDoctorWorkspace: boolean
 ): string {
   if (isSelected) {
-    return 'bg-sky-100/80 dark:bg-sky-900/45';
+    return 'bg-[var(--cell-selected-bg)] text-[var(--cell-text)]';
+  }
+  if (isDirty) {
+    return 'bg-[var(--cell-dirty-bg)] text-[var(--cell-text)]';
   }
   if (!isDoctorWorkspace) {
-    return 'bg-white dark:bg-slate-950';
+    return 'bg-[var(--cell-bg)] hover:bg-[var(--cell-hover)] text-[var(--cell-text)]';
   }
   switch (category) {
     case 'patient_id':
-      return 'bg-sky-50/25 dark:bg-sky-950/30';
+      return 'bg-[#f7fbff] hover:bg-[#eff6ff] text-[#0f172a] dark:bg-[#626b74] dark:hover:bg-[#6c7680] dark:text-[#f5f5f5]';
     case 'prescription':
-      return 'bg-indigo-50/25 dark:bg-indigo-950/30';
+      return 'bg-[#f8f9ff] hover:bg-[#f0f2ff] text-[#0f172a] dark:bg-[#666775] dark:hover:bg-[#707180] dark:text-[#f5f5f5]';
     case 'clinical_finding':
-      return 'bg-teal-50/25 dark:bg-teal-950/30';
+      return 'bg-[#f6fbfa] hover:bg-[#edf7f5] text-[#0f172a] dark:bg-[#5f6d6b] dark:hover:bg-[#697775] dark:text-[#f5f5f5]';
     case 'medication_treatment':
-      return 'bg-emerald-50/25 dark:bg-emerald-950/30';
+      return 'bg-[#f6fbf8] hover:bg-[#edf7f1] text-[#0f172a] dark:bg-[#606d64] dark:hover:bg-[#6a776e] dark:text-[#f5f5f5]';
     case 'surgery':
-      return 'bg-rose-50/25 dark:bg-rose-950/30';
+      return 'bg-[#fff8f9] hover:bg-[#fdf0f2] text-[#0f172a] dark:bg-[#716367] dark:hover:bg-[#7b6c70] dark:text-[#f5f5f5]';
     default:
-      return 'bg-white dark:bg-slate-950';
+      return 'bg-[var(--cell-bg)] hover:bg-[var(--cell-hover)] text-[var(--cell-text)]';
   }
 }
 
@@ -218,6 +228,7 @@ interface SpreadsheetDataRowProps {
   editValueIfEditing: string;
   selectedColStart: number;
   selectedColEnd: number;
+  dirtyColsKey?: string;
   onRowHeaderClick: (gridRowIdx: number, shiftKey: boolean) => void;
   onRowResizeStart: (gridRowIdx: number, e: React.PointerEvent<HTMLDivElement>) => void;
   onCellClick: (gridRowIdx: number, colIdx: number, shiftKey: boolean) => void;
@@ -243,6 +254,7 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
   editValueIfEditing,
   selectedColStart,
   selectedColEnd,
+  dirtyColsKey,
   onRowHeaderClick,
   onRowResizeStart,
   onCellClick,
@@ -253,26 +265,26 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
   setRowElementRef
 }: SpreadsheetDataRowProps) {
   const excelRowNum = gridRowIdx + 1;
+  const dirtyColSet = useMemo(() => {
+    if (!dirtyColsKey) return null;
+    return new Set(dirtyColsKey.split(',').map((n) => Number(n)));
+  }, [dirtyColsKey]);
+
+  const effectiveRowHeight = manualHeight ?? DEFAULT_DATA_ROW_HEIGHT;
 
   return (
     <tr
       ref={(el) => setRowElementRef(gridRowIdx, el)}
-      style={
-        manualHeight
-          ? { height: `${manualHeight}px` }
-          : !isWrapEnabled
-            ? { height: `${DEFAULT_DATA_ROW_HEIGHT}px` }
-            : undefined
-      }
+      style={{ height: `${effectiveRowHeight}px` }}
     >
       <th
         onClick={(e) => onRowHeaderClick(gridRowIdx, e.shiftKey)}
-        className={`w-12 min-w-12 border-r border-b border-slate-300 dark:border-slate-700 text-center text-[11px] tabular-nums sticky left-0 z-[15] select-none cursor-pointer relative ${
+        className={`w-[50px] min-w-[50px] px-1 text-center text-[11px] tabular-nums sticky left-0 z-[15] select-none cursor-pointer rounded-l-[8px] rounded-r-none shadow-[-4px_0_0_0_var(--grid-canvas)] transition-colors ${
           isRowHighlighted && isFullRowMode
-            ? 'bg-slate-700 text-white font-semibold dark:bg-blue-600 dark:text-white'
+            ? 'bg-[var(--header-tile-active)] text-[var(--header-text-active)] font-semibold'
             : isRowHighlighted
-              ? 'bg-slate-200 text-slate-900 font-medium dark:bg-slate-800 dark:text-slate-100'
-              : 'bg-slate-100 hover:bg-slate-200/70 text-slate-600 font-normal dark:bg-slate-900 dark:hover:bg-slate-800 dark:text-slate-400'
+              ? 'bg-[var(--header-tile-range)] text-[var(--col-title-text)] font-semibold'
+              : 'bg-[var(--header-tile-bg)] hover:bg-[var(--header-tile-hover)] text-[var(--header-text)] font-medium'
         }`}
       >
         <span>{excelRowNum}</span>
@@ -281,7 +293,7 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
           onClick={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}
           title="Drag to resize row height"
-          className="absolute left-0 right-0 bottom-0 h-2 md:h-1.5 cursor-row-resize touch-none hover:bg-sky-500/70 z-20"
+          className="absolute left-1 right-0 bottom-0 h-2 md:h-1.5 cursor-row-resize touch-none hover:bg-[var(--resize-accent)]/70 rounded-full z-20"
         />
       </th>
 
@@ -290,24 +302,32 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
         const isInSel =
           selectedColStart !== -1 && cIdx >= selectedColStart && cIdx <= selectedColEnd;
         const isCellEditing = isAnchor && isEditingRow;
+        const isDirty = dirtyColSet ? dirtyColSet.has(cIdx) : false;
         const cellVal = rowCells ? (rowCells[cIdx] ?? '') : '';
         const colMeta = colMetaList[cIdx];
         const category = colMeta?.category ?? 'normal';
         const alignClass = getAlignmentClass(colMeta?.align ?? 'left');
-        const showRangeTint = isInSel && !(isAnchor && !isFullRowMode && selectedColStart === selectedColEnd);
-        const bgClass = getClinicalCellBgClass(category, showRangeTint, isDoctorWorkspace);
+        const showRangeTint =
+          isInSel && !(isAnchor && !isFullRowMode && selectedColStart === selectedColEnd);
+        const bgClass = getClinicalCellBgClass(category, showRangeTint, isDirty, isDoctorWorkspace);
 
         return (
           <td
             key={cIdx}
             onClick={(e) => onCellClick(gridRowIdx, cIdx, e.shiftKey)}
             onDoubleClick={(e) => onCellDoubleClick(gridRowIdx, cIdx, e.detail)}
-            className={`min-h-[28px] px-2.5 py-1 border-r border-b border-slate-300 dark:border-slate-800 relative text-xs leading-[18px] text-slate-900 dark:text-slate-100 font-normal tabular-nums align-top ${alignClass} ${bgClass} ${
+            className={`px-2.5 py-1.5 relative text-xs leading-[18px] font-normal tabular-nums align-top rounded-[5px] transition-colors ${alignClass} ${bgClass} ${
               isAnchor && !isCellEditing
-                ? 'outline-2 outline-slate-900 dark:outline-sky-400 outline-offset-[-2px] z-10'
+                ? 'ring-2 ring-inset ring-[var(--selection-ring)] z-10'
                 : ''
             }`}
           >
+            {isDirty && !isCellEditing && (
+              <span
+                className="pointer-events-none absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-300"
+                title="Unsaved edit"
+              />
+            )}
             {isCellEditing ? (
               <input
                 ref={setEditInputRef}
@@ -315,7 +335,7 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
                 value={editValueIfEditing}
                 onChange={(e) => onEditValueChange(e.target.value)}
                 onBlur={onCommitEdit}
-                className={`absolute inset-0 w-full h-full px-2.5 text-xs bg-white text-slate-900 border-2 border-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-sky-400 outline-none z-10 ${alignClass}`}
+                className={`absolute inset-0 w-full h-full px-2.5 text-xs rounded-[5px] bg-[var(--formula-input-bg)] text-[var(--control-text)] border-2 border-[var(--selection-ring)] outline-none z-10 ${alignClass}`}
               />
             ) : (
               <div
@@ -326,7 +346,7 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
                 }
                 style={
                   manualHeight
-                    ? { maxHeight: `${Math.max(18, manualHeight - 8)}px`, overflowY: 'auto' }
+                    ? { maxHeight: `${Math.max(18, manualHeight - 10)}px`, overflowY: 'auto' }
                     : undefined
                 }
               >
@@ -617,12 +637,48 @@ export function ExcelSpreadsheet({
   );
 
   const totalTableWidth = useMemo(() => {
-    let sum = ROW_HEADER_COL_WIDTH;
+    let sum = ROW_HEADER_COL_WIDTH + (totalCols + 2) * CELL_GUTTER;
     for (let c = 0; c < totalCols; c++) {
       sum += getColWidth(c);
     }
     return sum;
   }, [totalCols, getColWidth]);
+
+  // Fast per-row & header dirty edit lookups so React.memo row optimization stays intact
+  const dirtyColsByRow = useMemo(() => {
+    const rowColsMap = new Map<number, number[]>();
+    const activeId = currentSheet.id;
+    for (const edit of Object.values(dirtyCells)) {
+      if (
+        (activeId && edit.sheetId === activeId) ||
+        (!activeId && edit.sheetName === activeSheetName)
+      ) {
+        const cols = rowColsMap.get(edit.rowIndex) || [];
+        cols.push(edit.colIndex);
+        rowColsMap.set(edit.rowIndex, cols);
+      }
+    }
+    const serialized = new Map<number, string>();
+    for (const [rIdx, cols] of rowColsMap.entries()) {
+      cols.sort((a, b) => a - b);
+      serialized.set(rIdx, cols.join(','));
+    }
+    return serialized;
+  }, [dirtyCells, currentSheet.id, activeSheetName]);
+
+  const dirtyHeaderCols = useMemo(() => {
+    const cols = new Set<number>();
+    const activeId = currentSheet.id;
+    for (const edit of Object.values(dirtyHeaders)) {
+      if (
+        (activeId && edit.sheetId === activeId) ||
+        (!activeId && edit.sheetName === activeSheetName)
+      ) {
+        cols.add(edit.colIndex);
+      }
+    }
+    return cols;
+  }, [dirtyHeaders, currentSheet.id, activeSheetName]);
 
   // Normalized selection bounds for highlighting, copy, and clear
   const selectionBounds = useMemo(() => {
@@ -2412,14 +2468,14 @@ export function ExcelSpreadsheet({
   return (
     <div
       ref={rootRef}
-      className="flex flex-col h-screen w-full bg-white dark:bg-slate-950 select-none overflow-hidden font-sans text-xs text-slate-800 dark:text-slate-100 outline-none"
+      className="flex flex-col h-screen w-full bg-[var(--grid-canvas)] select-none overflow-hidden font-sans text-xs text-[var(--control-text)] outline-none"
       onKeyDown={handleKeyDown}
       onCopy={handleCopy}
       onPaste={handlePaste}
       tabIndex={0}
     >
       {/* 1. Application Toolbar / Header */}
-      <div className="h-12 px-4 bg-white text-slate-900 border-b border-slate-200 dark:bg-slate-950 dark:text-slate-100 dark:border-slate-800 flex items-center justify-between gap-4 shrink-0 shadow-xs">
+      <div className="h-12 px-4 bg-[var(--chrome-bg)] text-[var(--control-text)] border-b border-[var(--chrome-border)] flex items-center justify-between gap-4 shrink-0">
         {/* Top-Left: Official MK Eye Center Logo directly, NO background container */}
         <div className="flex items-center shrink-0">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -2435,14 +2491,14 @@ export function ExcelSpreadsheet({
         <div className="flex items-center gap-2 ml-auto">
           {/* Admin workspace switcher if applicable */}
           {visibleWorkspaces.length > 1 && (
-            <div className="flex items-center bg-slate-100 dark:bg-slate-900 p-0.5 rounded-lg border border-slate-200 dark:border-slate-800 text-xs mr-1.5">
+            <div className="flex items-center bg-[var(--control-bg)] p-0.5 rounded-lg border border-[var(--control-border)] text-xs mr-1.5">
               <button
                 type="button"
                 onClick={() => onWorkspaceSwitchRequest('reception')}
                 className={`px-3 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
                   activeWorkspace === 'reception'
                     ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                    : 'text-[var(--control-muted)] hover:text-[var(--control-text)]'
                 }`}
               >
                 Reception
@@ -2453,7 +2509,7 @@ export function ExcelSpreadsheet({
                 className={`px-3 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
                   activeWorkspace === 'doctor'
                     ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                    : 'text-[var(--control-muted)] hover:text-[var(--control-text)]'
                 }`}
               >
                 Doctor
@@ -2463,9 +2519,9 @@ export function ExcelSpreadsheet({
 
           {/* Save & Conflict Status Notice */}
           <div className="flex items-center gap-2 text-[11px] mr-1" role="status" aria-live="polite">
-            {isLoading && <span className="text-slate-500 dark:text-slate-400">Loading...</span>}
+            {isLoading && <span className="text-[var(--control-muted)]">Loading...</span>}
             {!isLoading && saveStatus === 'saving' && (
-              <span className="text-slate-600 dark:text-slate-300 font-medium">Saving...</span>
+              <span className="text-[var(--control-text)] font-medium">Saving...</span>
             )}
             {!isLoading && saveStatus === 'saved' && !hasUnsavedChanges && (
               <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{saveMessage || 'Saved'}</span>
@@ -2483,9 +2539,9 @@ export function ExcelSpreadsheet({
                 type="button"
                 onClick={() => void handleReloadLatest()}
                 disabled={isReloading}
-                className="px-2 py-0.5 bg-red-600 text-white rounded-md font-medium hover:bg-red-700 cursor-pointer disabled:opacity-50 text-[11px]"
+                className="px-2.5 py-0.5 bg-red-600 text-white rounded-md font-medium hover:bg-red-700 cursor-pointer disabled:opacity-50 text-[11px]"
               >
-                {isReloading ? 'Reload' : 'Reload'}
+                {isReloading ? 'Reloading...' : 'Reload'}
               </button>
             )}
           </div>
@@ -2494,7 +2550,7 @@ export function ExcelSpreadsheet({
             <button
               type="button"
               onClick={onRequestInitialImport}
-              className="px-3 py-1.5 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition cursor-pointer text-xs"
+              className="px-3 py-1.5 font-semibold text-white bg-emerald-700 hover:bg-emerald-600 rounded-lg transition cursor-pointer text-xs whitespace-nowrap"
             >
               Import Workbooks
             </button>
@@ -2506,7 +2562,7 @@ export function ExcelSpreadsheet({
               onClick={onToggleTheme}
               aria-label={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               title={theme === 'dark' ? 'Dark Mode (click for Light Mode)' : 'Light Mode (click for Dark Mode)'}
-              className="h-8 w-8 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-amber-300 dark:hover:bg-slate-700 transition cursor-pointer shrink-0"
+              className="h-8 w-8 flex items-center justify-center rounded-lg border border-[var(--control-border)] bg-[var(--control-bg)] text-[var(--control-text)] hover:bg-[var(--control-bg-hover)] dark:text-amber-300 transition cursor-pointer shrink-0"
             >
               {theme === 'dark' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
             </button>
@@ -2516,7 +2572,7 @@ export function ExcelSpreadsheet({
             type="button"
             onClick={() => void handleSave()}
             disabled={saveStatus === 'saving' || isLoading || !currentSheet.id}
-            className="px-4 py-1.5 font-semibold text-white bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-lg transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5 text-xs shadow-xs"
+            className="px-4 py-1.5 font-semibold text-white bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-lg transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5 text-xs whitespace-nowrap"
           >
             {saveStatus === 'saving' ? 'Saving...' : 'Save'}
           </button>
@@ -2525,7 +2581,7 @@ export function ExcelSpreadsheet({
             type="button"
             onClick={() => void handleDirectExport()}
             disabled={isExporting || sheetKeys.length === 0}
-            className="px-4 py-1.5 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 dark:text-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 dark:border-slate-700 rounded-lg transition disabled:opacity-50 cursor-pointer text-xs"
+            className="px-4 py-1.5 font-semibold text-[var(--control-text)] bg-[var(--control-bg)] hover:bg-[var(--control-bg-hover)] border border-[var(--control-border)] rounded-lg transition disabled:opacity-50 cursor-pointer text-xs whitespace-nowrap"
           >
             {isExporting ? 'Exporting...' : 'Export'}
           </button>
@@ -2533,14 +2589,19 @@ export function ExcelSpreadsheet({
       </div>
 
       {/* 2. Formula & Cell Address Bar */}
-      <div className="h-8 md:h-7 px-2.5 md:px-3 bg-white dark:bg-slate-900 border-b border-slate-300 dark:border-slate-700 flex items-center gap-2 shrink-0 text-xs">
-        <div className="min-w-16 h-5 px-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xs flex items-center justify-center font-mono font-semibold text-slate-700 dark:text-slate-200 text-[11px] select-none shrink-0">
+      <div className="h-10 px-3 bg-[var(--formula-bg)] border-b border-[var(--chrome-border)] flex items-center gap-2 shrink-0 text-xs">
+        <div className="min-w-[72px] h-7 px-2.5 bg-[var(--formula-address-bg)] border border-[var(--control-border)] rounded-md flex items-center justify-center font-mono font-semibold tabular-nums text-[var(--control-text)] text-xs select-none shrink-0">
           {selectionAddressLabel}
         </div>
-        <span className="text-slate-400 dark:text-slate-500 font-serif italic text-xs select-none">fx</span>
-        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 shrink-0" />
+        <div
+          className="h-7 px-2 bg-[var(--control-bg)] border border-[var(--control-border)] rounded-md flex items-center justify-center text-[var(--control-muted)] font-serif italic text-[13px] select-none shrink-0"
+          aria-hidden="true"
+        >
+          fx
+        </div>
         <input
           type="text"
+          aria-label="Cell value or formula input"
           value={isEditing ? editValue : String(getCellValue(selectedCell.row, selectedCell.col) ?? '')}
           disabled={!currentSheet.id}
           onChange={(e) => {
@@ -2563,7 +2624,7 @@ export function ExcelSpreadsheet({
               commitEdit(false, false);
             }
           }}
-          className="flex-1 min-w-0 h-6 md:h-5 px-1.5 bg-transparent text-slate-900 dark:text-slate-100 text-xs font-normal outline-none focus:bg-slate-50 dark:focus:bg-slate-800 rounded-xs disabled:opacity-50"
+          className="flex-1 min-w-0 h-7 px-3 bg-[var(--formula-input-bg)] border border-[var(--control-border)] rounded-md text-[var(--control-text)] text-xs font-normal outline-none focus:border-[var(--selection-ring)] focus:ring-1 focus:ring-[var(--selection-ring)] transition-colors disabled:opacity-50"
         />
       </div>
 
@@ -2576,7 +2637,7 @@ export function ExcelSpreadsheet({
               type="button"
               onClick={() => void handleReloadLatest()}
               disabled={isReloading}
-              className="px-2 py-0.5 bg-red-600 text-white rounded-xs font-medium hover:bg-red-700 cursor-pointer"
+              className="px-2.5 py-0.5 bg-red-600 text-white rounded-md font-medium hover:bg-red-700 cursor-pointer"
             >
               Retry
             </button>
@@ -2620,24 +2681,24 @@ export function ExcelSpreadsheet({
         </div>
       )}
 
-      {/* 3. Main Spreadsheet Grid Viewport */}
+      {/* 3. Main Spreadsheet Grid Viewport (Rounded Cell Tiles + Negative-Space Gutters) */}
       <div
         ref={gridContainerRef}
-        className="flex-1 overflow-auto touch-pan-x touch-pan-y bg-white dark:bg-slate-950 relative outline-none"
+        className="flex-1 overflow-auto touch-pan-x touch-pan-y bg-[var(--grid-canvas)] mk-spreadsheet-scroll relative outline-none"
       >
         {!isLoading && sheetKeys.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-slate-500 dark:text-slate-400 p-6 text-center">
-            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+          <div className="h-full flex flex-col items-center justify-center text-[var(--control-muted)] p-6 text-center">
+            <p className="text-sm font-medium text-[var(--control-text)]">
               No worksheets found in the {workspace === 'doctor' ? 'Doctor' : 'Reception'} workspace yet.
             </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            <p className="text-xs text-[var(--control-muted)] mt-1">
               Click the <span className="font-mono font-bold">+</span> button at the bottom left to create a worksheet.
             </p>
             {user?.role === 'admin' && canAdminImport && onRequestInitialImport && (
               <button
                 type="button"
                 onClick={onRequestInitialImport}
-                className="mt-4 px-4 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 rounded-xs transition cursor-pointer shadow-xs"
+                className="mt-4 px-4 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition cursor-pointer"
               >
                 Import Initial Workbooks (Reception &amp; Doctor)
               </button>
@@ -2647,7 +2708,7 @@ export function ExcelSpreadsheet({
           <table
             ref={tableRef}
             style={{ width: `${totalTableWidth}px` }}
-            className="border-separate border-spacing-0 table-fixed text-xs"
+            className="border-separate border-spacing-[2px] table-fixed text-xs bg-[var(--grid-canvas)]"
           >
             <colgroup>
               <col style={{ width: `${ROW_HEADER_COL_WIDTH}px` }} />
@@ -2662,16 +2723,16 @@ export function ExcelSpreadsheet({
               ))}
             </colgroup>
 
-            <thead ref={theadRef}>
-              {/* Row 0: Excel Column Letters (sticky top-0, height 24px / h-6) */}
-              <tr className="h-6">
+            <thead ref={theadRef} className="sticky top-0 z-30 bg-[var(--grid-canvas)]">
+              {/* Row 0: Column Letter Tiles (top rounded corners ~8px, square bottom corners) */}
+              <tr style={{ height: `${DEFAULT_COL_LETTER_ROW_HEIGHT}px` }}>
                 <th
                   onClick={handleSelectAllClick}
                   title="Select entire worksheet"
-                  className={`w-12 min-w-12 h-6 border-r border-b border-slate-300 dark:border-slate-700 sticky top-0 left-0 z-50 select-none text-center cursor-pointer transition-colors ${
+                  className={`w-[50px] min-w-[50px] h-[26px] sticky left-0 z-50 rounded-[6px] select-none text-center cursor-pointer transition-colors shadow-[-4px_0_0_0_var(--grid-canvas)] ${
                     selection.mode === 'all'
-                      ? 'bg-slate-700 text-white dark:bg-blue-600 dark:text-white'
-                      : 'bg-slate-200 hover:bg-slate-300 text-slate-500 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-400'
+                      ? 'bg-[var(--header-tile-active)] text-[var(--header-text-active)]'
+                      : 'bg-[var(--header-tile-bg)] hover:bg-[var(--header-tile-hover)] text-[var(--header-text)]'
                   }`}
                 >
                   <span className="text-[10px] leading-none">◢</span>
@@ -2688,12 +2749,12 @@ export function ExcelSpreadsheet({
                       }}
                       style={{ width: `${width}px`, minWidth: `${width}px` }}
                       onClick={(e) => handleColHeaderClick(cIdx, e.shiftKey)}
-                      className={`h-6 border-r border-b border-slate-300 dark:border-slate-700 text-center text-[11px] select-none sticky top-0 z-30 cursor-pointer ${
+                      className={`h-[26px] text-center text-[11px] tracking-wide select-none relative cursor-pointer rounded-t-[8px] rounded-b-none transition-colors ${
                         isColSelected && isFullColSelectionMode
-                          ? 'bg-slate-700 text-white font-semibold dark:bg-blue-600 dark:text-white'
+                          ? 'bg-[var(--header-tile-active)] text-[var(--header-text-active)] font-semibold'
                           : isColSelected
-                            ? 'bg-slate-200 text-slate-900 font-semibold dark:bg-slate-800 dark:text-slate-100'
-                            : 'bg-slate-100 hover:bg-slate-200/70 font-medium text-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800 dark:text-slate-300'
+                            ? 'bg-[var(--header-tile-range)] text-[var(--col-title-text)] font-semibold'
+                            : 'bg-[var(--header-tile-bg)] hover:bg-[var(--header-tile-hover)] font-medium text-[var(--header-text)]'
                       }`}
                     >
                       <span>{getColumnLetter(cIdx)}</span>
@@ -2702,30 +2763,30 @@ export function ExcelSpreadsheet({
                         onClick={(e) => e.stopPropagation()}
                         onDoubleClick={(e) => e.stopPropagation()}
                         title="Drag to resize column width"
-                        className="absolute right-0 top-0 bottom-0 w-2 md:w-1.5 cursor-col-resize touch-none hover:bg-sky-500/70 z-20"
+                        className="absolute right-0 top-1 bottom-0 w-2 md:w-1.5 cursor-col-resize touch-none hover:bg-[var(--resize-accent)]/70 rounded-full z-20"
                       />
                     </th>
                   );
                 })}
               </tr>
 
-              {/* Row 1: Sticky Worksheet Column Header Titles (sticky top-6 / 24px) */}
+              {/* Row 1: Column Title Header Tiles */}
               <tr
                 ref={(el) => {
                   rowElementsRef.current[0] = el;
                 }}
-                style={getManualRowHeight(0) ? { height: `${getManualRowHeight(0)}px` } : undefined}
+                style={{ height: `${getManualRowHeight(0) ?? DEFAULT_HEADER_ROW_HEIGHT}px` }}
               >
                 <th
                   ref={headerRowThRef}
                   onClick={(e) => handleRowHeaderClick(0, e.shiftKey)}
-                  style={getManualRowHeight(0) ? { height: `${getManualRowHeight(0)}px` } : undefined}
-                  className={`w-12 min-w-12 min-h-[34px] border-r border-b-2 border-slate-300 border-b-slate-400 dark:border-slate-700 dark:border-b-slate-600 font-bold text-center text-[11px] sticky top-6 left-0 z-40 select-none cursor-pointer shadow-[0_2px_4px_-1px_rgba(15,23,42,0.12)] ${
+                  style={{ height: `${getManualRowHeight(0) ?? DEFAULT_HEADER_ROW_HEIGHT}px` }}
+                  className={`w-[50px] min-w-[50px] px-1 font-semibold text-center text-[11px] tabular-nums sticky left-0 z-40 select-none cursor-pointer rounded-l-[8px] rounded-r-none shadow-[-4px_0_0_0_var(--grid-canvas)] transition-colors ${
                     isRowHeaderHighlighted(0) && isFullRowSelectionMode
-                      ? 'bg-slate-700 text-white dark:bg-blue-600 dark:text-white'
+                      ? 'bg-[var(--header-tile-active)] text-[var(--header-text-active)]'
                       : isRowHeaderHighlighted(0)
-                        ? 'bg-[#c5d4ea] text-slate-900 dark:bg-slate-700 dark:text-slate-100'
-                        : 'bg-[#d5e0ef] hover:bg-[#c5d4ea] text-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200'
+                        ? 'bg-[var(--header-tile-range)] text-[var(--col-title-text)]'
+                        : 'bg-[var(--header-tile-bg)] hover:bg-[var(--header-tile-hover)] text-[var(--header-text)]'
                   }`}
                 >
                   <span>1</span>
@@ -2734,7 +2795,7 @@ export function ExcelSpreadsheet({
                     onClick={(e) => e.stopPropagation()}
                     onDoubleClick={(e) => e.stopPropagation()}
                     title="Drag to resize header row height"
-                    className="absolute left-0 right-0 bottom-0 h-2 md:h-1.5 cursor-row-resize touch-none hover:bg-sky-500/70 z-20"
+                    className="absolute left-1 right-0 bottom-0 h-2 md:h-1.5 cursor-row-resize touch-none hover:bg-[var(--resize-accent)]/70 rounded-full z-20"
                   />
                 </th>
 
@@ -2742,6 +2803,7 @@ export function ExcelSpreadsheet({
                   const isAnchor = selectedCell.row === 0 && selectedCell.col === cIdx;
                   const isInSel = isCellInSelection(0, cIdx);
                   const isCellEditing = isAnchor && isEditing && selection.mode === 'cell';
+                  const isHeaderDirty = dirtyHeaderCols.has(cIdx);
                   const cellVal = getCellValue(0, cIdx);
                   const width = getColWidth(cIdx);
                   const manualHeight = getManualRowHeight(0);
@@ -2751,6 +2813,7 @@ export function ExcelSpreadsheet({
                   const headerBgClass = getClinicalHeaderClasses(
                     category,
                     isInSel && !(isAnchor && selection.mode === 'cell'),
+                    isHeaderDirty,
                     isDoctorWorkspace
                   );
 
@@ -2767,14 +2830,18 @@ export function ExcelSpreadsheet({
                       }}
                       onClick={(e) => handleCellClick(0, cIdx, e.shiftKey)}
                       onDoubleClick={(e) => handleCellDoubleClick(0, cIdx, e.detail)}
-                      className={`min-h-[34px] px-2.5 py-1.5 border-r border-b-2 border-slate-300 border-b-slate-400 dark:border-slate-700 dark:border-b-slate-600 font-bold text-xs leading-[18px] tracking-[0.01em] sticky top-6 shadow-[0_2px_4px_-1px_rgba(15,23,42,0.1)] align-middle ${alignClass} ${headerBgClass} ${
-                        isAnchor || isCellEditing ? 'z-[25]' : 'z-20'
-                      } ${
+                      className={`px-2.5 py-1.5 font-semibold text-xs leading-[18px] tracking-[0.01em] align-middle relative rounded-t-[2px] rounded-b-[5px] transition-colors ${alignClass} ${headerBgClass} ${
                         isAnchor && !isCellEditing
-                          ? 'outline-2 outline-slate-900 dark:outline-sky-400 outline-offset-[-2px]'
-                          : ''
+                          ? 'ring-2 ring-inset ring-[var(--selection-ring)] z-[25]'
+                          : 'z-20'
                       }`}
                     >
+                      {isHeaderDirty && !isCellEditing && (
+                        <span
+                          className="pointer-events-none absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-300"
+                          title="Unsaved header edit"
+                        />
+                      )}
                       {isCellEditing ? (
                         <input
                           ref={setEditInputRef}
@@ -2782,7 +2849,7 @@ export function ExcelSpreadsheet({
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
                           onBlur={() => commitEdit(false, false)}
-                          className={`absolute inset-0 w-full h-full px-2.5 text-xs font-semibold bg-white text-slate-900 border-2 border-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-sky-400 outline-none z-20 ${alignClass}`}
+                          className={`absolute inset-0 w-full h-full px-2.5 text-xs font-semibold rounded-[5px] bg-[var(--formula-input-bg)] text-[var(--control-text)] border-2 border-[var(--selection-ring)] outline-none z-20 ${alignClass}`}
                         />
                       ) : (
                         <div
@@ -2793,7 +2860,7 @@ export function ExcelSpreadsheet({
                           }
                           style={
                             manualHeight
-                              ? { maxHeight: `${Math.max(18, manualHeight - 8)}px`, overflowY: 'auto' }
+                              ? { maxHeight: `${Math.max(18, manualHeight - 10)}px`, overflowY: 'auto' }
                               : undefined
                           }
                         >
@@ -2833,6 +2900,7 @@ export function ExcelSpreadsheet({
                     editValueIfEditing={isEditingRow ? editValue : ''}
                     selectedColStart={isRowHighlighted ? selectionBounds.cMin : -1}
                     selectedColEnd={isRowHighlighted ? selectionBounds.cMax : -1}
+                    dirtyColsKey={dirtyColsByRow.get(rIdx - 1)}
                     onRowHeaderClick={handleRowHeaderClick}
                     onRowResizeStart={handleRowResizeStart}
                     onCellClick={handleCellClick}
@@ -2850,8 +2918,8 @@ export function ExcelSpreadsheet({
       </div>
 
       {/* 4. Worksheet Tabs along the bottom with '+' button and Sign Out at bottom-right */}
-      <div className="h-9 md:h-8 bg-slate-200 dark:bg-slate-900 border-t border-slate-300 dark:border-slate-700 flex items-center justify-between px-2 gap-2 shrink-0">
-        <div className="flex items-center gap-1 overflow-x-auto min-w-0 flex-1 py-0.5">
+      <div className="h-10 bg-[var(--tab-strip-bg)] border-t border-[var(--chrome-border)] flex items-center justify-between px-3 gap-3 shrink-0">
+        <div className="flex items-center gap-1.5 overflow-x-auto min-w-0 flex-1 py-1">
           {renderedSheetKeys.map((name) => {
             const isActive = activeSheetName === name;
             const isBeingRenamed = renamingSheetName === name;
@@ -2869,8 +2937,8 @@ export function ExcelSpreadsheet({
                   e.preventDefault();
                   e.stopPropagation();
                   if (isDeletingSheet) return;
-                  const menuWidth = 148;
-                  const menuHeight = 84;
+                  const menuWidth = 160;
+                  const menuHeight = 88;
                   const x = Math.min(e.clientX, window.innerWidth - menuWidth - 12);
                   const y = Math.max(12, e.clientY - menuHeight - 12);
                   setTabContextMenu({ sheetName: name, x, y });
@@ -2901,12 +2969,12 @@ export function ExcelSpreadsheet({
                     handleStartRename(name);
                   }
                 }}
-                className={`group relative px-3 py-1 text-xs font-medium border-t-2 rounded-t-xs transition-all duration-150 cursor-pointer select-none whitespace-nowrap flex items-center gap-1.5 touch-none ${
+                className={`group relative px-3 py-1 text-xs font-medium rounded-md border transition-all duration-150 cursor-pointer select-none whitespace-nowrap flex items-center gap-1.5 touch-none ${
                   isBeingDragged
                     ? 'bg-blue-50 border-blue-600 text-blue-900 dark:bg-sky-900/70 dark:border-sky-400 dark:text-sky-100 shadow-md ring-2 ring-blue-500/40 dark:ring-sky-400/50 scale-[1.02] z-20'
                     : isActive
-                      ? 'bg-white border-slate-900 text-slate-900 dark:bg-slate-950 dark:border-sky-400 dark:text-slate-100 shadow-xs'
-                      : 'bg-slate-200 border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200'
+                      ? 'bg-[var(--tab-active-bg)] border-[var(--control-border)] border-b-2 border-b-[var(--tab-active-border)] text-[var(--tab-text-active)] font-semibold'
+                      : 'bg-[var(--tab-bg)] border-transparent text-[var(--tab-text)] hover:bg-[var(--tab-hover)] hover:text-[var(--tab-text-active)]'
                 } ${isDeletingThis ? 'opacity-50' : ''}`}
                 title={`Worksheet: ${name} (Double-click to rename, right-click for options, drag to reorder)`}
               >
@@ -2936,7 +3004,7 @@ export function ExcelSpreadsheet({
                     }}
                     onClick={(e) => e.stopPropagation()}
                     maxLength={31}
-                    className="px-1 py-0.5 text-xs font-semibold bg-white border border-blue-600 rounded-xs text-slate-900 dark:bg-slate-800 dark:border-sky-400 dark:text-slate-100 outline-none w-28"
+                    className="px-1.5 py-0.5 text-xs font-semibold bg-[var(--formula-input-bg)] border border-[var(--selection-ring)] rounded-xs text-[var(--control-text)] outline-none w-28"
                   />
                 ) : (
                   <span>{name}</span>
@@ -2950,22 +3018,22 @@ export function ExcelSpreadsheet({
             onClick={() => void handleAddSheetImmediate()}
             disabled={isCreatingSheet || isDeletingSheet}
             title="Create new worksheet"
-            className="h-6 w-6 flex items-center justify-center rounded-xs bg-slate-300/80 hover:bg-slate-300 active:bg-slate-400 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:active:bg-slate-600 dark:text-slate-200 font-bold text-sm cursor-pointer ml-1 shrink-0 transition disabled:opacity-50"
+            className="h-7 w-7 flex items-center justify-center rounded-md bg-[var(--control-bg)] hover:bg-[var(--control-bg-hover)] border border-[var(--control-border)] text-[var(--control-text)] font-bold text-sm cursor-pointer ml-1 shrink-0 transition disabled:opacity-50"
           >
             {isCreatingSheet ? '...' : '+'}
           </button>
         </div>
 
         {/* Bottom-Right Corner: Sign Out */}
-        <div className="flex items-center gap-2.5 shrink-0 pl-2.5 border-l border-slate-300 dark:border-slate-700">
-          <span className="text-slate-600 dark:text-slate-400 font-mono text-[11px] max-w-[120px] sm:max-w-none truncate" title={user?.role}>
+        <div className="flex items-center gap-2.5 shrink-0 pl-3 border-l border-[var(--chrome-border)]">
+          <span className="text-[var(--control-muted)] font-mono text-[11px] max-w-[120px] sm:max-w-none truncate" title={user?.role}>
             {staffLabel}
           </span>
           <button
             type="button"
             onClick={() => void handleSignOutClick()}
             disabled={isLoggingOut}
-            className="text-xs text-slate-700 hover:text-red-700 font-semibold px-2 py-0.5 rounded-xs hover:bg-slate-300/60 dark:text-slate-200 dark:hover:text-red-400 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap"
+            className="text-xs text-[var(--control-text)] hover:text-red-600 dark:hover:text-red-400 font-semibold px-2.5 py-1 rounded-md hover:bg-[var(--control-bg-hover)] transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap"
             title="Sign Out"
           >
             {isLoggingOut ? (
@@ -2986,18 +3054,18 @@ export function ExcelSpreadsheet({
       {/* 5. Worksheet Tab Context Menu (Right-Click) */}
       {tabContextMenu && (
         <div
-          className="fixed z-50 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-sm shadow-xl py-1 w-36 text-xs text-slate-800 dark:text-slate-100"
+          className="fixed z-50 bg-[var(--chrome-bg)] border border-[var(--control-border)] rounded-lg shadow-xl py-1 w-40 text-xs text-[var(--control-text)]"
           style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="px-3 py-1 font-semibold text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-800 truncate">
+          <div className="px-3 py-1.5 font-semibold text-[10px] uppercase tracking-wider text-[var(--control-muted)] border-b border-[var(--chrome-border)] truncate">
             {tabContextMenu.sheetName}
           </div>
           <button
             type="button"
             disabled={isDeletingSheet}
             onClick={() => handleStartRename(tabContextMenu.sheetName)}
-            className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 flex items-center gap-2 cursor-pointer transition"
+            className="w-full text-left px-3 py-1.5 hover:bg-[var(--control-bg-hover)] disabled:opacity-40 flex items-center gap-2 cursor-pointer transition"
           >
             <span>Rename</span>
           </button>
@@ -3007,7 +3075,7 @@ export function ExcelSpreadsheet({
               void handleDeleteSheetImmediate(tabContextMenu.sheetName);
             }}
             disabled={sheetKeys.length <= 1 || isDeletingSheet}
-            className="w-full text-left px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-950/60 text-red-600 dark:text-red-400 disabled:opacity-40 disabled:hover:bg-transparent flex items-center gap-2 cursor-pointer transition border-t border-slate-100 dark:border-slate-800"
+            className="w-full text-left px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-950/60 text-red-600 dark:text-red-400 disabled:opacity-40 disabled:hover:bg-transparent flex items-center gap-2 cursor-pointer transition border-t border-[var(--chrome-border)]"
           >
             {isDeletingSheet && deletingSheetName === tabContextMenu.sheetName ? (
               <>
@@ -3044,8 +3112,6 @@ export function ExcelSpreadsheet({
         }}
         onCancel={() => setPendingBulkClear(null)}
       />
-
-
     </div>
   );
 }

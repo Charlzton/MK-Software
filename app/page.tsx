@@ -258,17 +258,6 @@ export default function Home() {
           style={{ backgroundImage: `url('/assets/aistudio/login_bg_de335fe2.jpg')` }}
         />
 
-        {/* Top-left official logo directly on the page on its own */}
-        <div className="absolute top-6 left-6 z-10">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/assets/aistudio/mk_long_logo_a5863dd4.png"
-            alt="MK Eye Center Logo"
-            className="h-10 sm:h-12 w-auto object-contain"
-            referrerPolicy="no-referrer"
-          />
-        </div>
-
         {/* Glassmorphism Login Card Container */}
         <div className="relative z-10 w-full max-w-sm sm:max-w-md mx-auto px-4">
           <LoginCard onSuccess={handleLoginSuccess} externalError={sessionError} />
