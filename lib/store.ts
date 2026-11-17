@@ -953,17 +953,25 @@ export async function saveWorkspaceSheetLayoutRpc(
         throw new StoreRpcError(
           501,
           'MIGRATION_REQUIRED',
-          'Column width and row height persistence requires running docs/sql/008_comprehensive_layout_persistence.sql in Supabase SQL Editor.',
+          'Column width and row height persistence requires running docs/sql/006_sheet_layout_persistence.sql or docs/sql/007_layout_and_structural_ops.sql in Supabase SQL Editor.',
           updateError.message
         );
       }
       throw mapRpcError(updateError);
     }
 
+    if (!updateData) {
+      throw new StoreRpcError(
+        501,
+        'MIGRATION_REQUIRED',
+        'Worksheet layout save requires running docs/sql/006_sheet_layout_persistence.sql or docs/sql/007_layout_and_structural_ops.sql in Supabase SQL Editor.'
+      );
+    }
+
     return {
-      sheetId: String(updateData?.id ?? sheetId),
-      columnWidths: normalizeDimensionMap(updateData?.column_widths ?? cleanCols, 256, 40, 800),
-      rowHeights: normalizeDimensionMap(updateData?.row_heights ?? cleanRows, 100000, 24, 600)
+      sheetId: String(updateData.id),
+      columnWidths: normalizeDimensionMap(updateData.column_widths ?? cleanCols, 256, 40, 800),
+      rowHeights: normalizeDimensionMap(updateData.row_heights ?? cleanRows, 100000, 24, 600)
     };
   }
 

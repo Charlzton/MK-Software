@@ -12,7 +12,6 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
   RefreshCw,
   WifiOff
 } from 'lucide-react';
@@ -308,8 +307,6 @@ interface SpreadsheetDataRowProps {
   dirtyColsKey?: string;
   workspace: 'reception' | 'doctor';
   paidColIdx: number;
-  totalColIdx: number;
-  onSelectPaidOption?: (gridRowIdx: number, colIdx: number, value: 'Paid' | 'Unpaid') => void;
   onRowHeaderClick: (gridRowIdx: number, shiftKey: boolean) => void;
   onRowHeaderContextMenu: (gridRowIdx: number, x: number, y: number) => void;
   onRowHeaderTouchStart: (gridRowIdx: number, e: React.PointerEvent<HTMLTableCellElement>) => void;
@@ -340,10 +337,6 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
   selectedColStart,
   selectedColEnd,
   dirtyColsKey,
-  workspace,
-  paidColIdx,
-  totalColIdx,
-  onSelectPaidOption,
   onRowHeaderClick,
   onRowHeaderContextMenu,
   onRowHeaderTouchStart,
@@ -363,24 +356,6 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
     return new Set(dirtyColsKey.split(',').map((n) => Number(n)));
   }, [dirtyColsKey]);
 
-  const [activePaidDropdownCol, setActivePaidDropdownCol] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (activePaidDropdownCol === null) return;
-    const handleOutside = (e: MouseEvent | TouchEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target?.closest('[data-paid-dropdown]')) {
-        setActivePaidDropdownCol(null);
-      }
-    };
-    window.addEventListener('mousedown', handleOutside);
-    window.addEventListener('touchstart', handleOutside);
-    return () => {
-      window.removeEventListener('mousedown', handleOutside);
-      window.removeEventListener('touchstart', handleOutside);
-    };
-  }, [activePaidDropdownCol]);
-
   const effectiveRowHeight = manualHeight ?? DEFAULT_DATA_ROW_HEIGHT;
 
   return (
@@ -397,7 +372,7 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
           onRowHeaderContextMenu(gridRowIdx, e.clientX, e.clientY);
         }}
         style={{ width: `${rowHeaderWidth}px`, minWidth: `${rowHeaderWidth}px` }}
-        className={`px-1 text-center text-[11px] tabular-nums align-middle sticky left-0 z-[15] select-none cursor-pointer touch-manipulation rounded-l-[8px] rounded-r-none shadow-[-4px_0_0_0_var(--grid-canvas)] transition-colors duration-75 ${
+        className={`px-1 text-center text-[11px] tabular-nums align-middle sticky left-0 z-[15] select-none cursor-pointer touch-manipulation rounded-l-[8px] rounded-r-none shadow-[-4px_0_0_0_var(--grid-canvas)] ${
           isRowHighlighted && isFullRowMode
             ? 'bg-[var(--header-tile-active)] text-[var(--header-text-active)] font-semibold'
             : isRowHighlighted
@@ -428,36 +403,18 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
           isInSel && !(isAnchor && !isFullRowMode && selectedColStart === selectedColEnd);
         const bgClass = getUniformCellBgClass(showRangeTint, isDirty);
 
-        const isReceptionPaid = workspace === 'reception' && cIdx === paidColIdx;
-        const isReceptionTotal = workspace === 'reception' && cIdx === totalColIdx;
-        const isDropdownOpen = isReceptionPaid && activePaidDropdownCol === cIdx;
-
         return (
           <td
             key={cIdx}
-            onClick={(e) => {
-              onCellClick(gridRowIdx, cIdx, e.shiftKey, e.detail);
-              if (isReceptionPaid) {
-                setActivePaidDropdownCol((prev) => (prev === cIdx ? null : cIdx));
-              }
-            }}
-            onDoubleClick={(e) => {
-              if (isReceptionPaid) {
-                setActivePaidDropdownCol((prev) => (prev === cIdx ? null : cIdx));
-                return;
-              }
-              if (isReceptionTotal) {
-                return;
-              }
-              onCellDoubleClick(gridRowIdx, cIdx, e.detail);
-            }}
+            onClick={(e) => onCellClick(gridRowIdx, cIdx, e.shiftKey, e.detail)}
+            onDoubleClick={(e) => onCellDoubleClick(gridRowIdx, cIdx, e.detail)}
             onPointerDown={(e) => onCellTouchStart(gridRowIdx, cIdx, e)}
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
               onCellContextMenu(gridRowIdx, cIdx, e.clientX, e.clientY);
             }}
-            className={`px-2 sm:px-3 py-2 relative text-xs leading-[20px] font-normal tabular-nums align-middle rounded-[5px] touch-manipulation transition-[box-shadow,background-color] duration-75 hover:shadow-[inset_0_0_0_1px_rgba(59,130,246,0.35)] ${alignClass} ${bgClass} ${
+            className={`px-2 sm:px-3 py-2 relative text-xs leading-[20px] font-normal tabular-nums align-middle rounded-[5px] touch-manipulation ${alignClass} ${bgClass} ${
               isAnchor && !isCellEditing
                 ? 'ring-2 ring-inset ring-[var(--selection-ring)] z-10'
                 : ''
@@ -478,75 +435,8 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
                 onBlur={onCommitEdit}
                 className={`absolute inset-0 w-full h-full px-2 sm:px-3 text-base sm:text-xs rounded-[5px] bg-[var(--formula-input-bg)] text-[var(--control-text)] border-2 border-[var(--selection-ring)] outline-none z-10 ${alignClass}`}
               />
-            ) : isReceptionPaid ? (
-              <div
-                data-paid-dropdown
-                className="relative flex items-center justify-between w-full h-[20px]"
-              >
-                <span
-                  className={`truncate font-medium ${
-                    String(cellVal).trim().toLowerCase() === 'paid'
-                      ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
-                      : String(cellVal).trim().toLowerCase() === 'unpaid'
-                        ? 'text-rose-600 dark:text-rose-400 font-semibold'
-                        : ''
-                  }`}
-                >
-                  {cellVal !== undefined && cellVal !== null ? String(cellVal) : ''}
-                </span>
-                <button
-                  type="button"
-                  aria-label="Select Payment Status"
-                  title="Select Paid or Unpaid"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActivePaidDropdownCol((prev) => (prev === cIdx ? null : cIdx));
-                  }}
-                  className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/60 shrink-0 ml-1 transition-colors"
-                >
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </button>
-                {isDropdownOpen && (
-                  <div
-                    onClick={(e) => e.stopPropagation()}
-                    className="absolute right-0 top-full mt-1.5 z-40 min-w-[110px] py-1 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-100 backdrop-blur-sm"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectPaidOption?.(gridRowIdx, cIdx, 'Paid');
-                        setActivePaidDropdownCol(null);
-                      }}
-                      className={`w-full text-left px-3 py-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-700 dark:hover:text-emerald-300 flex items-center gap-2 font-medium ${
-                        String(cellVal).trim().toLowerCase() === 'paid'
-                          ? 'bg-emerald-50/70 dark:bg-emerald-950/30 font-semibold text-emerald-600 dark:text-emerald-400'
-                          : ''
-                      }`}
-                    >
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-                      <span>Paid</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectPaidOption?.(gridRowIdx, cIdx, 'Unpaid');
-                        setActivePaidDropdownCol(null);
-                      }}
-                      className={`w-full text-left px-3 py-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/40 hover:text-rose-700 dark:hover:text-rose-300 flex items-center gap-2 font-medium ${
-                        String(cellVal).trim().toLowerCase() === 'unpaid'
-                          ? 'bg-rose-50/70 dark:bg-rose-950/30 font-semibold text-rose-600 dark:text-rose-400'
-                          : ''
-                      }`}
-                    >
-                      <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
-                      <span>Unpaid</span>
-                    </button>
-                  </div>
-                )}
-              </div>
             ) : (
               <div
-                title={isReceptionTotal ? 'Auto-calculated: Test Fee + Medication' : undefined}
                 className={
                   isWrapEnabled
                     ? 'whitespace-normal break-words leading-[20px] min-h-[20px]'
@@ -1108,85 +998,44 @@ export function ExcelSpreadsheet({
 
   // Auto-position scroll viewport to the latest record when a worksheet opens or becomes visible
   const isActiveWorkspace = workspace === activeWorkspace;
-  const prevIsActiveWorkspaceRef = useRef<boolean>(isActiveWorkspace);
-
-  useEffect(() => {
-    if (!prevIsActiveWorkspaceRef.current && isActiveWorkspace) {
-      const curSheet = sheets[activeSheetName];
-      const latestRow = findLatestRecordGridRow(curSheet);
-      setScrollPositionRequest((prev) => ({
-        sheetName: activeSheetName,
-        targetRow: latestRow,
-        nonce: prev.nonce + 1
-      }));
-    }
-    prevIsActiveWorkspaceRef.current = isActiveWorkspace;
-  }, [isActiveWorkspace, activeSheetName, sheets]);
-
   useEffect(() => {
     if (!isActiveWorkspace || isLoading) return;
     if (scrollPositionRequest.nonce === 0) return;
     if (scrollPositionRequest.sheetName !== activeSheetName) return;
     if (lastExecutedScrollNonceRef.current === scrollPositionRequest.nonce) return;
 
+    const container = gridContainerRef.current;
+    if (!container || container.clientHeight === 0) return;
+
+    lastExecutedScrollNonceRef.current = scrollPositionRequest.nonce;
     const targetRow = scrollPositionRequest.targetRow;
-    const currentNonce = scrollPositionRequest.nonce;
 
-    let attempts = 0;
-    const maxAttempts = 12;
-    let timerId: number | null = null;
-    let rafId: number | null = null;
-
-    const attemptScroll = () => {
-      attempts++;
+    const rafId = window.requestAnimationFrame(() => {
       const el = gridContainerRef.current;
-      if (!el || el.clientHeight === 0) {
-        if (attempts < maxAttempts) {
-          timerId = window.setTimeout(attemptScroll, 40);
-        }
-        return;
-      }
+      if (!el || el.clientHeight === 0) return;
 
       const theadHeight = theadRef.current?.offsetHeight ?? 58;
-
       if (targetRow <= 1) {
         el.scrollTop = 0;
         el.scrollLeft = 0;
-        lastExecutedScrollNonceRef.current = currentNonce;
         return;
       }
 
       const tbodyEl = tbodyRef.current;
       const targetTr = tbodyEl?.children[targetRow - 1] as HTMLElement | undefined;
-
-      // Ensure target row has rendered and has a measured positive offsetTop
-      if ((!targetTr || targetTr.offsetTop === 0) && attempts < maxAttempts) {
-        timerId = window.setTimeout(attemptScroll, 40);
-        return;
-      }
-
       const viewportDataHeight = Math.max(120, el.clientHeight - theadHeight);
 
-      if (targetTr && targetTr.offsetTop > 0) {
-        const rowTopInContainer = targetTr.offsetTop;
-        const targetScrollTop = Math.max(0, rowTopInContainer - theadHeight - Math.floor(viewportDataHeight * 0.35));
-        el.scrollTop = targetScrollTop;
-        el.scrollLeft = 0;
-        lastExecutedScrollNonceRef.current = currentNonce;
-      } else if (attempts >= maxAttempts) {
+      if (targetTr) {
+        const rowTopInTbody = Math.max(0, targetTr.offsetTop - theadHeight);
+        el.scrollTop = Math.max(0, rowTopInTbody - Math.floor(viewportDataHeight * 0.45));
+      } else {
         const estimatedY = (targetRow - 1) * DEFAULT_DATA_ROW_HEIGHT;
-        el.scrollTop = Math.max(0, estimatedY - Math.floor(viewportDataHeight * 0.35));
-        el.scrollLeft = 0;
-        lastExecutedScrollNonceRef.current = currentNonce;
+        el.scrollTop = Math.max(0, estimatedY - Math.floor(viewportDataHeight * 0.45));
       }
-    };
+      el.scrollLeft = 0;
+    });
 
-    rafId = window.requestAnimationFrame(attemptScroll);
-
-    return () => {
-      if (rafId) window.cancelAnimationFrame(rafId);
-      if (timerId) window.clearTimeout(timerId);
-    };
+    return () => window.cancelAnimationFrame(rafId);
   }, [isActiveWorkspace, isLoading, activeSheetName, scrollPositionRequest]);
 
   // Keep keyboard-selected row visible below sticky headers when navigating with Arrow/Tab/Enter
@@ -1305,28 +1154,6 @@ export function ExcelSpreadsheet({
     []
   );
 
-  const receptionColIndices = useMemo(() => {
-    const curSheet = sheets[activeSheetName];
-    if (workspace !== 'reception' || !curSheet) {
-      return { testFeeCol: -1, medicationCol: -1, totalCol: -1, paidCol: -1 };
-    }
-    const headers = curSheet.headers || [];
-    const norm = headers.map((h) => (h || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
-    const findCol = (terms: string[], fallback: number) => {
-      for (const t of terms) {
-        const idx = norm.indexOf(t);
-        if (idx !== -1) return idx;
-      }
-      return fallback < headers.length ? fallback : -1;
-    };
-    return {
-      testFeeCol: findCol(['test fee', 'testfee'], 7),
-      medicationCol: findCol(['medication', 'medicine'], 9),
-      totalCol: findCol(['total'], 10),
-      paidCol: findCol(['paid', 'payment status'], 12)
-    };
-  }, [workspace, sheets, activeSheetName]);
-
   // Batch-safe cell updater preserving optimistic concurrency baselines + 100-step undo/redo history
   const applyCellUpdates = useCallback(
     (
@@ -1342,52 +1169,6 @@ export function ExcelSpreadsheet({
         return;
       }
 
-      // Automatically calculate Total = Test Fee + Medication in Reception workspace
-      let effectiveUpdates = [...updates];
-      if (workspace === 'reception' && receptionColIndices.totalCol !== -1) {
-        const { testFeeCol, medicationCol, totalCol } = receptionColIndices;
-        const touchedRows = new Map<number, { testFee?: string | number; medication?: string | number }>();
-
-        for (const u of updates) {
-          if (u.row > 0) {
-            if (u.col === testFeeCol) {
-              const entry = touchedRows.get(u.row) || {};
-              entry.testFee = u.value;
-              touchedRows.set(u.row, entry);
-            } else if (u.col === medicationCol) {
-              const entry = touchedRows.get(u.row) || {};
-              entry.medication = u.value;
-              touchedRows.set(u.row, entry);
-            }
-          }
-        }
-
-        if (touchedRows.size > 0) {
-          const parseNumeric = (val: unknown): number => {
-            if (val === null || val === undefined || val === '') return 0;
-            if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
-            const cleaned = String(val).replace(/[^0-9.-]+/g, '');
-            const parsed = parseFloat(cleaned);
-            return Number.isFinite(parsed) ? parsed : 0;
-          };
-
-          for (const [r, entry] of touchedRows.entries()) {
-            const dataRowIdx = r - 1;
-            const existingRow = targetSheet.rows[dataRowIdx] || [];
-            const feeVal = entry.testFee !== undefined ? entry.testFee : existingRow[testFeeCol];
-            const medVal = entry.medication !== undefined ? entry.medication : existingRow[medicationCol];
-            const calcTotal = parseNumeric(feeVal) + parseNumeric(medVal);
-
-            const existingTotalIdx = effectiveUpdates.findIndex((u) => u.row === r && u.col === totalCol);
-            if (existingTotalIdx >= 0) {
-              effectiveUpdates[existingTotalIdx] = { row: r, col: totalCol, value: calcTotal };
-            } else {
-              effectiveUpdates.push({ row: r, col: totalCol, value: calcTotal });
-            }
-          }
-        }
-      }
-
       const sheetId = targetSheet.id;
       const nextDirtyHeaders = { ...dirtyHeadersRef.current };
       const nextDirtyCells = { ...dirtyCellsRef.current };
@@ -1398,7 +1179,7 @@ export function ExcelSpreadsheet({
       const updatedRows = [...targetSheet.rows];
       const diffs: CellDiffEntry[] = [];
 
-      for (const { row: r, col: c, value } of effectiveUpdates) {
+      for (const { row: r, col: c, value } of updates) {
         if (r < 0 || c < 0 || c >= MAX_COLS_LIMIT) continue;
 
         const prevValue =
@@ -1536,7 +1317,7 @@ export function ExcelSpreadsheet({
         setSaveMessage('');
       }
     },
-    [activeSheetName, sheets, totalCols, selection, workspace, receptionColIndices]
+    [activeSheetName, sheets, totalCols, selection]
   );
 
   const setCellValue = useCallback(
@@ -1549,14 +1330,6 @@ export function ExcelSpreadsheet({
       applyCellUpdates([{ row: r, col: c, value }], options);
     },
     [applyCellUpdates]
-  );
-
-  const handleSelectPaidOption = useCallback(
-    (gridRowIdx: number, colIdx: number, value: 'Paid' | 'Unpaid') => {
-      applyCellUpdates([{ row: gridRowIdx, col: colIdx, value }]);
-      scheduleAutosave(1000);
-    },
-    [applyCellUpdates, scheduleAutosave]
   );
 
   useEffect(() => {
@@ -2181,13 +1954,6 @@ export function ExcelSpreadsheet({
       now - lastTap.time < 380
     ) {
       lastTouchTapRef.current = null;
-      if (
-        workspace === 'reception' &&
-        r > 0 &&
-        (c === receptionColIndices.totalCol || c === receptionColIndices.paidCol)
-      ) {
-        return;
-      }
       const val = getCellValueRef.current(r, c);
       setEditValue(String(val ?? ''));
       setIsEditing(true);
@@ -2203,30 +1969,13 @@ export function ExcelSpreadsheet({
       focusRow: r,
       focusCol: c
     });
-  }, [workspace, receptionColIndices]);
+  }, []);
 
   // Intentional double-click opens edit mode on the clicked cell
   const handleCellDoubleClick = useCallback((r: number, c: number, detail: number) => {
     if (justResizedRef.current || detail < 2) return;
     rootRef.current?.focus({ preventScroll: true });
     if (isEditingRef.current) commitEditRef.current(0, 0);
-
-    // In Reception workspace, prevent accidental manual text editing of auto-calculated Total or dropdown Paid cells
-    if (
-      workspace === 'reception' &&
-      r > 0 &&
-      (c === receptionColIndices.totalCol || c === receptionColIndices.paidCol)
-    ) {
-      setSelection({
-        mode: 'cell',
-        anchorRow: r,
-        anchorCol: c,
-        focusRow: r,
-        focusCol: c
-      });
-      return;
-    }
-
     setSelection({
       mode: 'cell',
       anchorRow: r,
@@ -2237,7 +1986,7 @@ export function ExcelSpreadsheet({
     const val = getCellValueRef.current(r, c);
     setEditValue(String(val ?? ''));
     setIsEditing(true);
-  }, [workspace, receptionColIndices]);
+  }, []);
 
   const handleRowHeaderClick = useCallback((r: number, shiftKey: boolean) => {
     if (justResizedRef.current || justLongPressedRef.current) return;

@@ -308,25 +308,25 @@ export default function Home() {
   if (!user) {
     return (
       <main className="relative mk-min-h-dvh w-full flex flex-col overflow-x-hidden overflow-y-auto bg-slate-200 pb-[max(1.25rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))]">
-        {/* Full-bleed edge-to-edge new official background across all devices and orientations */}
+        {/* Full-bleed edge-to-edge clinic background across all devices and orientations */}
         <div className="fixed inset-0 z-0 pointer-events-none select-none overflow-hidden">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/assets/aistudio/image_bdc5ab00.png"
-            alt="MK Eye Center Portal Background"
+            src="/assets/aistudio/login_bg_de335fe2.jpg"
+            alt=""
             aria-hidden="true"
-            className="w-full h-full object-cover object-center scale-105"
+            className="w-full h-full object-cover object-[35%_center] sm:object-[40%_center] md:object-center"
           />
-          <div className="absolute inset-0 bg-slate-950/20 backdrop-brightness-95" />
+          <div className="absolute inset-0 bg-slate-950/10" />
         </div>
 
-        {/* Official Brand Logo: top-left on desktop, center-aligned on mobile and tablet */}
-        <header className="relative z-20 w-full flex items-center justify-center md:justify-start px-4 sm:px-6 md:px-10 pt-[max(1rem,env(safe-area-inset-top))] sm:pt-6 shrink-0">
+        {/* Top-Left Brand Logo directly over the background (no pill/box container) */}
+        <header className="relative z-20 w-full flex items-center justify-start px-2 sm:px-5 md:px-7 pt-[max(1rem,env(safe-area-inset-top))] sm:pt-6 shrink-0">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/assets/aistudio/mk_long_logo_a5863dd4.png"
             alt="MK Eye Center"
-            className="h-8 sm:h-9 md:h-10 w-auto max-w-[170px] sm:max-w-[210px] object-contain select-none drop-shadow-[0_2px_10px_rgba(0,0,0,0.6)] hover:scale-102 hover:brightness-105 transition-all duration-150"
+            className="h-8 sm:h-10 md:h-11 w-auto max-w-[168px] sm:max-w-[215px] object-contain select-none drop-shadow-[0_1px_4px_rgba(255,255,255,0.75)]"
             referrerPolicy="no-referrer"
           />
         </header>
