@@ -1,351 +1,525 @@
-import fs from 'fs';
-import path from 'path';
-import { SheetDefinition, INITIAL_WORKBOOK, SHEET_NAMES } from './data/rawWorkbookData';
-import { INITIAL_DOCTOR_WORKBOOK, DOCTOR_SHEET_NAMES } from './data/rawDoctorWorkbookData';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type { UserRole } from '@/lib/types';
 
 export type WorkspaceType = 'reception' | 'doctor';
 
-interface WorkbookDatabase {
-  sheets: Record<string, SheetDefinition>;
-  lastSavedAt: string;
+export interface WorkspaceSheetState {
+  id: string;
+  name: string;
+  sheetKey?: string;
+  tabOrder: number;
+  headers: string[];
+  headerVersion: number;
+  rows: (string | number)[][];
+  rowVersions: Record<number, number>;
+  cellVersions: Record<number, Record<number, number>>;
 }
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const RECEPTION_DB_FILE = path.join(DATA_DIR, 'reception_workbook_store.json');
-const LEGACY_DB_FILE = path.join(DATA_DIR, 'mk_workbook_store.json');
-const DOCTOR_DB_FILE = path.join(DATA_DIR, 'doctor_workbook_store.json');
-
-const DEFAULT_BLANK_HEADERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
-
-function ensureDirectoryExists() {
-  if (!fs.existsSync(DATA_DIR)) {
-    try {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    } catch {
-      // ignore
-    }
-  }
+export interface WorkspaceWorkbookResult {
+  workspace: WorkspaceType;
+  sheets: Record<string, WorkspaceSheetState>;
+  sheetNames: string[];
+  lastSavedAt: string | null;
 }
 
-function ensureReceptionStore(): WorkbookDatabase {
-  ensureDirectoryExists();
-
-  // Migrate legacy store file if present
-  if (!fs.existsSync(RECEPTION_DB_FILE) && fs.existsSync(LEGACY_DB_FILE)) {
-    try {
-      const legacyContent = fs.readFileSync(LEGACY_DB_FILE, 'utf-8');
-      fs.writeFileSync(RECEPTION_DB_FILE, legacyContent, 'utf-8');
-    } catch {
-      // ignore
-    }
-  }
-
-  if (!fs.existsSync(RECEPTION_DB_FILE)) {
-    const initialDb: WorkbookDatabase = {
-      sheets: { ...INITIAL_WORKBOOK },
-      lastSavedAt: new Date().toISOString()
-    };
-    try {
-      fs.writeFileSync(RECEPTION_DB_FILE, JSON.stringify(initialDb, null, 2), 'utf-8');
-      return initialDb;
-    } catch (err) {
-      console.error('Failed to create reception database file:', err);
-      return initialDb;
-    }
-  }
-
-  try {
-    const content = fs.readFileSync(RECEPTION_DB_FILE, 'utf-8');
-    const parsed = JSON.parse(content) as WorkbookDatabase;
-    return parsed;
-  } catch (err) {
-    console.error('Failed to read reception database file, restoring defaults:', err);
-    return {
-      sheets: { ...INITIAL_WORKBOOK },
-      lastSavedAt: new Date().toISOString()
-    };
-  }
+export interface CellEditInput {
+  rowIndex: number;
+  colIndex: number;
+  value: string | number;
+  expectedCellVersion: number;
 }
 
-function ensureDoctorStore(): WorkbookDatabase {
-  ensureDirectoryExists();
+export interface PatchCellResult {
+  sheetId: string;
+  rowIndex: number;
+  colIndex: number;
+  newCellVersion: number;
+  newRowVersion?: number;
+  updatedAt?: string;
+}
 
-  if (!fs.existsSync(DOCTOR_DB_FILE)) {
-    const initialDb: WorkbookDatabase = {
-      sheets: { ...INITIAL_DOCTOR_WORKBOOK },
-      lastSavedAt: new Date().toISOString()
-    };
-    try {
-      fs.writeFileSync(DOCTOR_DB_FILE, JSON.stringify(initialDb, null, 2), 'utf-8');
-      return initialDb;
-    } catch (err) {
-      console.error('Failed to create doctor database file:', err);
-      return initialDb;
-    }
-  }
+export interface PatchCellsBatchResult {
+  sheetId: string;
+  editCount: number;
+  updatedCells: Array<{
+    rowIndex: number;
+    colIndex: number;
+    newCellVersion: number;
+    newRowVersion?: number;
+  }>;
+  updatedAt?: string;
+}
 
-  try {
-    const content = fs.readFileSync(DOCTOR_DB_FILE, 'utf-8');
-    const parsed = JSON.parse(content) as WorkbookDatabase;
-    // If the existing file only has a single generic Sheet1, upgrade to real doctor worksheets
-    if (parsed && parsed.sheets && (!parsed.sheets['Lens Rx'] || Object.keys(parsed.sheets).length <= 1)) {
-      parsed.sheets = { ...INITIAL_DOCTOR_WORKBOOK, ...parsed.sheets };
-      persistStore(DOCTOR_DB_FILE, parsed);
-    }
-    return parsed;
-  } catch (err) {
-    console.error('Failed to read doctor database file, restoring defaults:', err);
-    return {
-      sheets: { ...INITIAL_DOCTOR_WORKBOOK },
-      lastSavedAt: new Date().toISOString()
-    };
+export interface PatchHeaderResult {
+  sheetId: string;
+  colIndex: number;
+  headers: string[];
+  newHeaderVersion: number;
+  updatedAt?: string;
+}
+
+export class StoreRpcError extends Error {
+  status: number;
+  code: string;
+  details?: string;
+
+  constructor(status: number, code: string, message: string, details?: string) {
+    super(message);
+    this.name = 'StoreRpcError';
+    this.status = status;
+    this.code = code;
+    this.details = details;
   }
 }
 
-function persistStore(file: string, db: WorkbookDatabase) {
-  try {
-    ensureDirectoryExists();
-    fs.writeFileSync(file, JSON.stringify(db, null, 2), 'utf-8');
-  } catch (err) {
-    console.error(`Failed to persist store ${file}:`, err);
-  }
+export function canRoleAccessWorkspace(role: UserRole, workspace: WorkspaceType): boolean {
+  if (role === 'admin') return true;
+  if (role === 'reception') return workspace === 'reception';
+  if (role === 'doctor') return workspace === 'doctor';
+  return false;
 }
 
-const DEFAULT_DOCTOR_SPREADSHEET_ID = '1kdrkBEP2Iok8iKBRvBQdHalIcK5bl3uMrKgB46iWh94';
-
-/**
- * Checks if the Doctor Google Sheets workbook has been configured.
- */
-export function isDoctorConfigured(): boolean {
-  return true;
-}
-
-export function getDoctorSpreadsheetId(): string {
-  const envId = process.env.DOCTOR_SPREADSHEET_ID;
-  if (envId && envId.trim() !== '' && envId !== 'undefined' && envId !== 'null') {
-    return envId.trim();
-  }
-  return DEFAULT_DOCTOR_SPREADSHEET_ID;
-}
-
-export function getWorkspaceSheets(workspace: WorkspaceType): Record<string, SheetDefinition> {
-  if (workspace === 'doctor') {
-    const db = ensureDoctorStore();
-    return db.sheets;
-  }
-  const db = ensureReceptionStore();
-  return db.sheets;
-}
-
-export function getWorkspaceSheet(workspace: WorkspaceType, sheetName: string): SheetDefinition | null {
-  const sheets = getWorkspaceSheets(workspace);
-  return sheets[sheetName] || null;
-}
-
-export type SheetSaveInput =
-  | (string | number)[][]
-  | {
-      headers?: string[];
-      rows: (string | number)[][];
-    };
-
-export function updateWorkspaceWorkbook(
-  workspace: WorkspaceType,
-  sheets: Record<string, SheetSaveInput>
-): boolean {
-  if (workspace === 'doctor') {
-    const db = ensureDoctorStore();
-    for (const [name, input] of Object.entries(sheets)) {
-      if (!input) continue;
-
-      let headers: string[] | undefined;
-      let rows: (string | number)[][];
-
-      if (Array.isArray(input)) {
-        rows = input;
-      } else {
-        headers = input.headers;
-        rows = input.rows || [];
-      }
-
-      if (db.sheets[name]) {
-        if (headers && Array.isArray(headers)) {
-          db.sheets[name].headers = headers;
-        }
-        db.sheets[name].rows = rows;
-      } else {
-        // Newly created sheet
-        db.sheets[name] = {
-          name,
-          headers: headers && Array.isArray(headers) ? headers : DEFAULT_BLANK_HEADERS,
-          rows
-        };
-      }
-    }
-    db.lastSavedAt = new Date().toISOString();
-    persistStore(DOCTOR_DB_FILE, db);
-    return true;
-  }
-
-  // Reception
-  const db = ensureReceptionStore();
-  for (const [name, input] of Object.entries(sheets)) {
-    if (!input) continue;
-
-    let headers: string[] | undefined;
-    let rows: (string | number)[][];
-
-    if (Array.isArray(input)) {
-      rows = input;
-    } else {
-      headers = input.headers;
-      rows = input.rows || [];
-    }
-
-    if (db.sheets[name]) {
-      if (headers && Array.isArray(headers)) {
-        db.sheets[name].headers = headers;
-      }
-      db.sheets[name].rows = rows;
-    } else if (INITIAL_WORKBOOK[name]) {
-      db.sheets[name] = {
-        ...INITIAL_WORKBOOK[name],
-        ...(headers ? { headers } : {}),
-        rows
-      };
-    } else {
-      // User-created sheet in reception
-      db.sheets[name] = {
-        name,
-        headers: headers && Array.isArray(headers) ? headers : DEFAULT_BLANK_HEADERS,
-        rows
-      };
-    }
-  }
-  db.lastSavedAt = new Date().toISOString();
-  persistStore(RECEPTION_DB_FILE, db);
-  return true;
-}
-
-export function createWorkspaceSheet(
-  workspace: WorkspaceType,
-  sheetName: string,
-  headers?: string[]
-): { success: boolean; error?: string } {
-  const trimmed = sheetName.trim();
+export function validateWorksheetName(rawName: string): { valid: true; name: string } | { valid: false; error: string } {
+  const trimmed = rawName.trim();
   if (!trimmed) {
-    return { success: false, error: 'Worksheet name cannot be empty.' };
+    return { valid: false, error: 'Worksheet name cannot be empty.' };
   }
-
-  // Check Excel illegal characters
-  const illegalChars = /[\\/?*[\]:]/;
-  if (illegalChars.test(trimmed)) {
+  if (/[\\/?*[\]:]/.test(trimmed)) {
     return {
-      success: false,
+      valid: false,
       error: 'Worksheet name cannot contain any of the following characters: \\ / ? * [ ] :'
     };
   }
-
   if (trimmed.length > 31) {
-    return {
-      success: false,
-      error: 'Worksheet name cannot exceed 31 characters.'
-    };
+    return { valid: false, error: 'Worksheet name cannot exceed 31 characters.' };
+  }
+  return { valid: true, name: trimmed };
+}
+
+function mapRpcError(error: { code?: string; message?: string; details?: string; hint?: string }): StoreRpcError {
+  const rawMessage = error.message || 'Database RPC error.';
+  const rawCode = error.code || '';
+
+  if (
+    rawCode === 'PGRST202' ||
+    /Could not find the function public\.import_initial_workbooks/i.test(rawMessage)
+  ) {
+    return new StoreRpcError(
+      501,
+      'MIGRATION_REQUIRED',
+      'Database RPC import_initial_workbooks is not installed yet. Run the SQL migration docs/sql/002_initial_workbook_import.sql in Supabase SQL Editor first.',
+      rawMessage
+    );
+  }
+  if (/IMPORT_CONFLICT/i.test(rawMessage)) {
+    return new StoreRpcError(409, 'IMPORT_CONFLICT', rawMessage, rawMessage);
+  }
+  if (/INVALID_IMPORT_BATCH|row import batch/i.test(rawMessage)) {
+    return new StoreRpcError(
+      409,
+      'IMPORT_BATCH_MISMATCH',
+      'Database save error: row import batch validation mismatch. Run docs/sql/003_fix_patch_workspace_cell_import_batch.sql in Supabase SQL Editor and retry.',
+      rawMessage
+    );
+  }
+  if (/CONFLICT|VERSION_CONFLICT|stale/i.test(rawMessage)) {
+    return new StoreRpcError(
+      409,
+      'VERSION_CONFLICT',
+      'Version conflict: another user modified this data since you loaded it. Reload the latest data and retry your edit.',
+      rawMessage
+    );
+  }
+  if (/FORBIDDEN|FORBIDDEN_ROLE|not authorized/i.test(rawMessage) || rawCode === '42501' || /permission denied/i.test(rawMessage)) {
+    return new StoreRpcError(403, 'FORBIDDEN', rawMessage);
+  }
+  if (/UNAUTHORIZED|Authentication required|inactive staff/i.test(rawMessage)) {
+    return new StoreRpcError(401, 'UNAUTHORIZED', rawMessage);
+  }
+  if (/SHEET_NOT_FOUND|not found/i.test(rawMessage)) {
+    return new StoreRpcError(404, 'NOT_FOUND', rawMessage);
+  }
+  if (/CONCURRENCY_REQUIRED|INVALID_|SHEET_EXISTS|already exists/i.test(rawMessage)) {
+    return new StoreRpcError(400, 'BAD_REQUEST', rawMessage);
   }
 
-  if (workspace === 'doctor') {
-    const db = ensureDoctorStore();
-    const existing = Object.keys(db.sheets).find((k) => k.toLowerCase() === trimmed.toLowerCase());
-    if (existing) {
-      return { success: false, error: `A worksheet named "${existing}" already exists in the Doctor workspace.` };
+  return new StoreRpcError(500, rawCode || 'RPC_ERROR', rawMessage, error.details || error.hint);
+}
+
+function normalizeCellScalar(val: unknown): string | number {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (typeof val === 'string') return val;
+  if (val === null || val === undefined) return '';
+  return String(val);
+}
+
+function normalizeCellVersionsMap(raw: unknown): Record<number, number> {
+  const result: Record<number, number> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    const colIdx = Number(key);
+    const ver = Number(val);
+    if (Number.isInteger(colIdx) && colIdx >= 0 && Number.isFinite(ver) && ver >= 0) {
+      result[colIdx] = ver;
+    }
+  }
+  return result;
+}
+
+interface RawRowRecord {
+  row_index?: unknown;
+  rowIndex?: unknown;
+  cells?: unknown;
+  row_version?: unknown;
+  rowVersion?: unknown;
+  cell_versions?: unknown;
+  cellVersions?: unknown;
+  updated_at?: unknown;
+  updatedAt?: unknown;
+}
+
+interface RawSheetRecord {
+  id?: unknown;
+  sheetId?: unknown;
+  name?: unknown;
+  sheet_key?: unknown;
+  sheetKey?: unknown;
+  tab_order?: unknown;
+  tabOrder?: unknown;
+  headers?: unknown;
+  header_version?: unknown;
+  headerVersion?: unknown;
+  rows?: unknown;
+  updated_at?: unknown;
+  updatedAt?: unknown;
+}
+
+function normalizeSheetRecord(rawSheet: RawSheetRecord, fallbackName: string, fallbackOrder: number): WorkspaceSheetState {
+  const id = String(rawSheet.id ?? rawSheet.sheetId ?? '');
+  const name = String(rawSheet.name ?? fallbackName);
+  const sheetKeyRaw = rawSheet.sheet_key ?? rawSheet.sheetKey;
+  const tabOrder = Number(rawSheet.tab_order ?? rawSheet.tabOrder ?? fallbackOrder);
+  const headerVersion = Number(rawSheet.header_version ?? rawSheet.headerVersion ?? 1);
+  const headers = Array.isArray(rawSheet.headers)
+    ? rawSheet.headers.map((h) => (typeof h === 'string' ? h : String(h ?? '')))
+    : [];
+
+  const rows: (string | number)[][] = [];
+  const rowVersions: Record<number, number> = {};
+  const cellVersions: Record<number, Record<number, number>> = {};
+
+  if (Array.isArray(rawSheet.rows)) {
+    const parsedRows = rawSheet.rows
+      .map((entry, idx): { rowIndex: number; cells: (string | number)[]; rowVersion: number; cellVersions: Record<number, number> } | null => {
+        if (Array.isArray(entry)) {
+          return {
+            rowIndex: idx,
+            cells: entry.map(normalizeCellScalar),
+            rowVersion: 1,
+            cellVersions: {}
+          };
+        }
+        if (entry && typeof entry === 'object') {
+          const rec = entry as RawRowRecord;
+          const rowIndexVal = Number(rec.row_index ?? rec.rowIndex ?? idx);
+          if (!Number.isInteger(rowIndexVal) || rowIndexVal < 0) return null;
+          const cellsArr = Array.isArray(rec.cells) ? rec.cells.map(normalizeCellScalar) : [];
+          const rowVer = Number(rec.row_version ?? rec.rowVersion ?? 1);
+          const cellVerMap = normalizeCellVersionsMap(rec.cell_versions ?? rec.cellVersions);
+          return {
+            rowIndex: rowIndexVal,
+            cells: cellsArr,
+            rowVersion: Number.isFinite(rowVer) && rowVer >= 1 ? rowVer : 1,
+            cellVersions: cellVerMap
+          };
+        }
+        return null;
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null)
+      .sort((a, b) => a.rowIndex - b.rowIndex);
+
+    for (const r of parsedRows) {
+      while (rows.length < r.rowIndex) {
+        rows.push([]);
+      }
+      rows[r.rowIndex] = r.cells;
+      rowVersions[r.rowIndex] = r.rowVersion;
+      cellVersions[r.rowIndex] = r.cellVersions;
+    }
+  }
+
+  return {
+    id,
+    name,
+    ...(typeof sheetKeyRaw === 'string' ? { sheetKey: sheetKeyRaw } : {}),
+    tabOrder: Number.isFinite(tabOrder) ? tabOrder : fallbackOrder,
+    headers,
+    headerVersion: Number.isFinite(headerVersion) && headerVersion >= 1 ? headerVersion : 1,
+    rows,
+    rowVersions,
+    cellVersions
+  };
+}
+
+export async function loadWorkspaceWorkbook(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType
+): Promise<WorkspaceWorkbookResult> {
+  const { data, error } = await supabase.rpc('get_workspace_workbook', {
+    p_workspace: workspace
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const normalizedList: WorkspaceSheetState[] = [];
+  let lastSavedAt: string | null = null;
+
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const obj = data as {
+      sheets?: unknown;
+      lastSavedAt?: unknown;
+      last_saved_at?: unknown;
+    };
+    const ts = obj.lastSavedAt ?? obj.last_saved_at;
+    if (typeof ts === 'string') {
+      lastSavedAt = ts;
     }
 
-    db.sheets[trimmed] = {
-      name: trimmed,
-      headers: headers || DEFAULT_BLANK_HEADERS,
-      rows: []
-    };
-    db.lastSavedAt = new Date().toISOString();
-    persistStore(DOCTOR_DB_FILE, db);
-    return { success: true };
+    if (Array.isArray(obj.sheets)) {
+      obj.sheets.forEach((s, idx) => {
+        if (s && typeof s === 'object') {
+          normalizedList.push(normalizeSheetRecord(s as RawSheetRecord, `Sheet${idx + 1}`, idx));
+        }
+      });
+    } else if (obj.sheets && typeof obj.sheets === 'object') {
+      Object.entries(obj.sheets as Record<string, unknown>).forEach(([key, val], idx) => {
+        if (val && typeof val === 'object') {
+          normalizedList.push(normalizeSheetRecord(val as RawSheetRecord, key, idx));
+        }
+      });
+    }
+  } else if (Array.isArray(data)) {
+    data.forEach((s, idx) => {
+      if (s && typeof s === 'object') {
+        normalizedList.push(normalizeSheetRecord(s as RawSheetRecord, `Sheet${idx + 1}`, idx));
+      }
+    });
   }
 
-  // Reception
-  const db = ensureReceptionStore();
-  const existing = Object.keys(db.sheets).find((k) => k.toLowerCase() === trimmed.toLowerCase());
-  if (existing) {
-    return { success: false, error: `A worksheet named "${existing}" already exists in the Reception workspace.` };
+  normalizedList.sort((a, b) => a.tabOrder - b.tabOrder);
+
+  const sheets: Record<string, WorkspaceSheetState> = {};
+  const sheetNames: string[] = [];
+  for (const sheet of normalizedList) {
+    sheets[sheet.name] = sheet;
+    sheetNames.push(sheet.name);
   }
 
-  const defaultReceptionHeaders = [
-    'Date',
-    'Recorded_By',
-    'Phone_No',
-    'Examined_By',
-    'Name',
-    'Date_of_Birth',
-    'Test_Type',
-    'Test_Fee',
-    'Drops_No',
-    'Medication',
-    'Total',
-    'Glass Total',
-    'Paid',
-    'Glasses BAL',
-    'Review Date',
-    'Review Test'
-  ];
-
-  db.sheets[trimmed] = {
-    name: trimmed,
-    headers: headers || defaultReceptionHeaders,
-    rows: []
+  return {
+    workspace,
+    sheets,
+    sheetNames,
+    lastSavedAt
   };
-  db.lastSavedAt = new Date().toISOString();
-  persistStore(RECEPTION_DB_FILE, db);
-  return { success: true };
 }
 
-export function setFullWorkbookFromRemote(
+export async function createWorkspaceSheetRpc(
+  supabase: SupabaseClient,
   workspace: WorkspaceType,
-  sheets: Record<string, SheetDefinition>
-): void {
-  if (workspace === 'doctor') {
-    const db = ensureDoctorStore();
-    db.sheets = { ...db.sheets, ...sheets };
-    db.lastSavedAt = new Date().toISOString();
-    persistStore(DOCTOR_DB_FILE, db);
-    return;
+  sheetName: string,
+  headers?: string[]
+): Promise<WorkspaceSheetState> {
+  const validated = validateWorksheetName(sheetName);
+  if (!validated.valid) {
+    throw new StoreRpcError(400, 'INVALID_SHEET_NAME', validated.error);
   }
 
-  const db = ensureReceptionStore();
-  db.sheets = { ...db.sheets, ...sheets };
-  db.lastSavedAt = new Date().toISOString();
-  persistStore(RECEPTION_DB_FILE, db);
-}
-
-export function getLastSavedTime(workspace: WorkspaceType = 'reception'): string {
-  if (workspace === 'doctor') {
-    const db = ensureDoctorStore();
-    return db.lastSavedAt;
+  const rpcArgs: Record<string, unknown> = {
+    p_workspace: workspace,
+    p_sheet_name: validated.name
+  };
+  if (headers && Array.isArray(headers) && headers.length > 0) {
+    rpcArgs.p_headers = headers;
   }
-  const db = ensureReceptionStore();
-  return db.lastSavedAt;
+
+  const { data, error } = await supabase.rpc('create_workspace_sheet', rpcArgs);
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const raw = (data && typeof data === 'object' ? data : {}) as RawSheetRecord;
+  return normalizeSheetRecord(
+    {
+      ...raw,
+      name: raw.name ?? validated.name,
+      headers: raw.headers ?? headers ?? []
+    },
+    validated.name,
+    Number(raw.tab_order ?? raw.tabOrder ?? 0)
+  );
 }
 
-// Backward-compatible exports for existing references
-export function getAllSheets(): Record<string, SheetDefinition> {
-  return getWorkspaceSheets('reception');
+export async function patchWorkspaceCellRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  edit: CellEditInput
+): Promise<PatchCellResult> {
+  const { data, error } = await supabase.rpc('patch_workspace_cell', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_row_index: edit.rowIndex,
+    p_col_index: edit.colIndex,
+    p_new_value: edit.value,
+    p_expected_cell_version: edit.expectedCellVersion
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  const newCellVersion = Number(res.newCellVersion ?? res.new_cell_version ?? edit.expectedCellVersion + 1);
+  const newRowVersionRaw = res.newRowVersion ?? res.new_row_version;
+
+  return {
+    sheetId: String(res.sheetId ?? res.sheet_id ?? sheetId),
+    rowIndex: Number(res.rowIndex ?? res.row_index ?? edit.rowIndex),
+    colIndex: Number(res.colIndex ?? res.col_index ?? edit.colIndex),
+    newCellVersion,
+    ...(newRowVersionRaw !== undefined ? { newRowVersion: Number(newRowVersionRaw) } : {}),
+    ...(typeof (res.updatedAt ?? res.updated_at) === 'string'
+      ? { updatedAt: String(res.updatedAt ?? res.updated_at) }
+      : {})
+  };
 }
 
-export function getSheet(sheetName: string): SheetDefinition | null {
-  return getWorkspaceSheet('reception', sheetName);
+export async function patchWorkspaceCellsBatchRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  edits: CellEditInput[]
+): Promise<PatchCellsBatchResult> {
+  const { data, error } = await supabase.rpc('patch_workspace_cells_batch', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_edits: edits
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  const rawUpdated = Array.isArray(res.updatedCells ?? res.updated_cells)
+    ? ((res.updatedCells ?? res.updated_cells) as Record<string, unknown>[])
+    : [];
+
+  const updatedCells = rawUpdated.map((item, idx) => {
+    const fallback = edits[idx];
+    const rowVerRaw = item.newRowVersion ?? item.new_row_version;
+    return {
+      rowIndex: Number(item.rowIndex ?? item.row_index ?? fallback?.rowIndex ?? 0),
+      colIndex: Number(item.colIndex ?? item.col_index ?? fallback?.colIndex ?? 0),
+      newCellVersion: Number(
+        item.newCellVersion ?? item.new_cell_version ?? (fallback ? fallback.expectedCellVersion + 1 : 1)
+      ),
+      ...(rowVerRaw !== undefined ? { newRowVersion: Number(rowVerRaw) } : {})
+    };
+  });
+
+  return {
+    sheetId: String(res.sheetId ?? res.sheet_id ?? sheetId),
+    editCount: Number(res.editCount ?? res.edit_count ?? edits.length),
+    updatedCells,
+    ...(typeof (res.updatedAt ?? res.updated_at) === 'string'
+      ? { updatedAt: String(res.updatedAt ?? res.updated_at) }
+      : {})
+  };
 }
 
-export function updateWorkbook(sheets: Record<string, (string | number)[][]>): boolean {
-  return updateWorkspaceWorkbook('reception', sheets);
+export async function patchWorkspaceHeaderRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  colIndex: number,
+  newHeader: string,
+  expectedHeaderVersion: number
+): Promise<PatchHeaderResult> {
+  const { data, error } = await supabase.rpc('patch_workspace_header', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_col_index: colIndex,
+    p_new_header: newHeader,
+    p_expected_header_version: expectedHeaderVersion
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  const headers = Array.isArray(res.headers)
+    ? res.headers.map((h) => (typeof h === 'string' ? h : String(h ?? '')))
+    : [];
+
+  return {
+    sheetId: String(res.sheetId ?? res.sheet_id ?? sheetId),
+    colIndex: Number(res.colIndex ?? res.col_index ?? colIndex),
+    headers,
+    newHeaderVersion: Number(res.newHeaderVersion ?? res.new_header_version ?? expectedHeaderVersion + 1),
+    ...(typeof (res.updatedAt ?? res.updated_at) === 'string'
+      ? { updatedAt: String(res.updatedAt ?? res.updated_at) }
+      : {})
+  };
 }
 
-export function updateSheetRows(sheetName: string, rows: (string | number)[][]): boolean {
-  return updateWorkspaceWorkbook('reception', { [sheetName]: rows });
+export interface InitialImportResult {
+  status: 'imported' | 'already_imported';
+  alreadyImported: boolean;
+  importBatchId: string | null;
+  receptionSheets: number;
+  receptionRows: number;
+  doctorSheets: number;
+  doctorRows: number;
+  totalSheets: number;
+  totalRows: number;
+}
+
+export async function importInitialWorkbooksRpc(
+  supabase: SupabaseClient,
+  batchKey: string,
+  payload: unknown
+): Promise<InitialImportResult> {
+  const { data, error } = await supabase.rpc('import_initial_workbooks', {
+    p_batch_key: batchKey,
+    p_payload: payload
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  const alreadyImported = Boolean(res.already_imported ?? res.alreadyImported);
+  const receptionSheets = Number(res.reception_sheets ?? res.receptionSheets ?? 0);
+  const receptionRows = Number(res.reception_rows ?? res.receptionRows ?? 0);
+  const doctorSheets = Number(res.doctor_sheets ?? res.doctorSheets ?? 0);
+  const doctorRows = Number(res.doctor_rows ?? res.doctorRows ?? 0);
+
+  return {
+    status: alreadyImported ? 'already_imported' : 'imported',
+    alreadyImported,
+    importBatchId: res.import_batch_id || res.importBatchId ? String(res.import_batch_id ?? res.importBatchId) : null,
+    receptionSheets,
+    receptionRows,
+    doctorSheets,
+    doctorRows,
+    totalSheets: Number(res.total_sheets ?? res.totalSheets ?? receptionSheets + doctorSheets),
+    totalRows: Number(res.total_rows ?? res.totalRows ?? receptionRows + doctorRows)
+  };
 }

@@ -1,77 +1,92 @@
-import crypto from 'crypto';
-import { User } from './types';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { createClient } from '@/lib/supabase/server';
+import type { User, UserRole } from '@/lib/types';
 
-const CONFIGURED_USERNAME = process.env.APP_LOGIN_USER || 'admin';
-const CONFIGURED_PASSWORD = process.env.APP_LOGIN_PASSWORD || 'mk123';
-const SECRET_KEY = process.env.SESSION_SECRET || 'mk_eye_center_session_secure_key_2025_ghana';
-
-export interface SessionPayload {
-  userId: string;
-  username: string;
-  name: string;
-  role: 'admin';
-  title?: string;
-  exp: number;
+export interface StaffProfileRow {
+  user_id: string;
+  role: UserRole;
+  display_name: string;
+  is_active: boolean;
 }
 
-export function createSessionToken(user: User): string {
-  const payload: SessionPayload = {
-    userId: user.id,
-    username: user.username,
-    name: user.name,
-    role: 'admin',
-    title: user.title,
-    exp: Date.now() + 1000 * 60 * 60 * 24 // 24-hour authenticated session
-  };
-  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const signature = crypto.createHmac('sha256', SECRET_KEY).update(body).digest('base64url');
-  return `${body}.${signature}`;
+export interface StaffUser extends User {
+  id: string;
+  email: string;
+  role: UserRole;
+  title: string;
+  displayName: string;
 }
 
-const CANDIDATE_SECRETS = [
-  process.env.SESSION_SECRET,
-  'mk_eye_center_secure_jwt_secret_token',
-  'mk_eye_center_session_secure_key_2025_ghana'
-].filter(Boolean) as string[];
+export type StaffVerificationResult =
+  | { status: 'authenticated'; user: StaffUser }
+  | { status: 'unauthenticated'; user: null }
+  | { status: 'unauthorized'; user: null; error: string }
+  | { status: 'error'; user: null; error: string };
 
-export function verifySessionToken(token: string): SessionPayload | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 2) return null;
-    const [body, signature] = parts;
+const VALID_ROLES = new Set<UserRole>(['admin', 'doctor', 'reception']);
 
-    let valid = false;
-    for (const secret of CANDIDATE_SECRETS) {
-      const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('base64url');
-      if (expectedSig === signature) {
-        valid = true;
-        break;
-      }
-    }
-    if (!valid) return null;
+function isValidStaffRole(role: unknown): role is UserRole {
+  return typeof role === 'string' && VALID_ROLES.has(role as UserRole);
+}
 
-    const payload: SessionPayload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-    if (Date.now() > payload.exp) return null;
-    return payload;
-  } catch {
-    return null;
+/**
+ * Verifies the current Supabase Auth session user against public.staff_profiles.
+ * Rejects and signs out any account without an active, role-valid staff profile.
+ */
+export async function verifyActiveStaff(
+  supabaseClient?: SupabaseClient
+): Promise<StaffVerificationResult> {
+  const supabase = supabaseClient ?? (await createClient());
+
+  const {
+    data: { user: authUser },
+    error: authError
+  } = await supabase.auth.getUser();
+
+  if (authError || !authUser) {
+    return { status: 'unauthenticated', user: null };
   }
-}
 
-export function authenticateStaff(username: string, password: string): User | null {
-  const inputUser = username.trim();
-  const inputPass = password;
+  const { data: profile, error: profileError } = await supabase
+    .from('staff_profiles')
+    .select('user_id, role, display_name, is_active')
+    .eq('user_id', authUser.id)
+    .maybeSingle<StaffProfileRow>();
 
-  // Exact match with configured credential (default admin / mk123)
-  if (inputUser === CONFIGURED_USERNAME && inputPass === CONFIGURED_PASSWORD) {
+  if (profileError) {
+    await supabase.auth.signOut();
     return {
-      id: 'USR-ADMIN',
-      username: 'admin',
-      name: 'Administrator',
-      role: 'admin',
-      title: 'Staff Member'
+      status: 'error',
+      user: null,
+      error: 'Failed to verify staff authorization profile.'
     };
   }
 
-  return null;
+  if (!profile || profile.is_active !== true || !isValidStaffRole(profile.role)) {
+    await supabase.auth.signOut();
+    return {
+      status: 'unauthorized',
+      user: null,
+      error: !profile
+        ? 'Account is not registered as an authorized MK Eye Center staff member.'
+        : 'Staff account is inactive or lacks an authorized role.'
+    };
+  }
+
+  const email = authUser.email ?? '';
+  const displayName = (profile.display_name ?? '').trim() || email;
+
+  return {
+    status: 'authenticated',
+    user: {
+      id: authUser.id,
+      email,
+      username: email || authUser.id,
+      name: displayName,
+      role: profile.role,
+      title: displayName,
+      displayName
+    }
+  };
 }
+

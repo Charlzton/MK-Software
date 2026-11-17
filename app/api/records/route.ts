@@ -1,254 +1,308 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifySessionToken } from '@/lib/auth';
+import { createClient } from '@/lib/supabase/server';
+import { verifyActiveStaff } from '@/lib/auth';
 import {
   WorkspaceType,
-  getWorkspaceSheets,
-  getWorkspaceSheet,
-  updateWorkspaceWorkbook,
-  createWorkspaceSheet,
-  setFullWorkbookFromRemote,
-  isDoctorConfigured,
-  getDoctorSpreadsheetId,
-  getLastSavedTime
+  CellEditInput,
+  StoreRpcError,
+  canRoleAccessWorkspace,
+  loadWorkspaceWorkbook,
+  createWorkspaceSheetRpc,
+  patchWorkspaceCellRpc,
+  patchWorkspaceCellsBatchRpc,
+  patchWorkspaceHeaderRpc
 } from '@/lib/store';
-import {
-  syncEntireWorkbookToGoogle,
-  syncSheetToGoogle,
-  fetchWorkbookFromGoogle,
-  createWorksheetInGoogle
-} from '@/lib/sheets';
-import { SheetDefinition } from '@/lib/data/rawWorkbookData';
 
-function getAuthenticatedUser(req: NextRequest) {
-  const cookie = req.cookies.get('mk_session')?.value;
-  if (!cookie) return null;
-  return verifySessionToken(cookie);
+function isValidWorkspace(val: unknown): val is WorkspaceType {
+  return val === 'reception' || val === 'doctor';
+}
+
+function isNonNegativeInt(val: unknown): val is number {
+  return typeof val === 'number' && Number.isInteger(val) && val >= 0;
+}
+
+function isValidCellScalar(val: unknown): val is string | number {
+  return typeof val === 'string' || (typeof val === 'number' && Number.isFinite(val));
+}
+
+function handleErrorResponse(err: unknown) {
+  if (err instanceof StoreRpcError) {
+    return NextResponse.json(
+      {
+        error: err.message,
+        code: err.code,
+        ...(err.details ? { details: err.details } : {})
+      },
+      { status: err.status }
+    );
+  }
+  const msg = err instanceof Error ? err.message : 'Unexpected server error';
+  return NextResponse.json({ error: msg }, { status: 500 });
 }
 
 export async function GET(req: NextRequest) {
-  const user = getAuthenticatedUser(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
-  }
+  try {
+    const supabase = await createClient();
+    const verification = await verifyActiveStaff(supabase);
 
-  const { searchParams } = new URL(req.url);
-  const workspaceParam = searchParams.get('workspace');
-  if (workspaceParam !== 'reception' && workspaceParam !== 'doctor') {
-    return NextResponse.json({ error: 'Invalid or missing workspace parameter.' }, { status: 400 });
-  }
-  const workspace: WorkspaceType = workspaceParam;
-  const sheetParam = searchParams.get('sheet');
-
-  if (workspace === 'reception') {
-    const receptionSpreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || '11rBhezcklOndIPa7YAHr3zIBh6WCXkp2235slmirnlI';
-
-    if (process.env.GOOGLE_APPS_SCRIPT_URL) {
-      try {
-        const googleResult = await fetchWorkbookFromGoogle('reception', receptionSpreadsheetId);
-        if (googleResult.success && googleResult.sheets) {
-          setFullWorkbookFromRemote('reception', googleResult.sheets as Record<string, SheetDefinition>);
-        }
-      } catch (err) {
-        console.warn('Could not fetch latest Reception Google Sheets data, using local store:', err);
-      }
+    if (verification.status === 'unauthenticated') {
+      return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
+    }
+    if (verification.status === 'unauthorized') {
+      return NextResponse.json({ error: verification.error }, { status: 403 });
+    }
+    if (verification.status === 'error') {
+      return NextResponse.json({ error: verification.error }, { status: 500 });
     }
 
+    const staff = verification.user;
+    const { searchParams } = new URL(req.url);
+    const workspaceParam = searchParams.get('workspace');
+
+    if (!isValidWorkspace(workspaceParam)) {
+      return NextResponse.json({ error: 'Invalid or missing workspace parameter.' }, { status: 400 });
+    }
+
+    if (!canRoleAccessWorkspace(staff.role, workspaceParam)) {
+      return NextResponse.json(
+        { error: `Forbidden: ${staff.role} role cannot access the ${workspaceParam} workspace.` },
+        { status: 403 }
+      );
+    }
+
+    const workbook = await loadWorkspaceWorkbook(supabase, workspaceParam);
+    const sheetParam = searchParams.get('sheet');
+
     if (sheetParam) {
-      const sheetData = getWorkspaceSheet('reception', sheetParam);
+      const sheetData = workbook.sheets[sheetParam];
       if (!sheetData) {
         return NextResponse.json({ error: 'Worksheet not found' }, { status: 404 });
       }
       return NextResponse.json({
-        workspace: 'reception',
+        workspace: workspaceParam,
         sheet: sheetData,
-        lastSavedAt: getLastSavedTime('reception')
+        lastSavedAt: workbook.lastSavedAt
       });
     }
 
-    const allSheets = getWorkspaceSheets('reception');
     return NextResponse.json({
-      workspace: 'reception',
-      sheets: allSheets,
-      sheetNames: Object.keys(allSheets),
+      workspace: workspaceParam,
+      sheets: workbook.sheets,
+      sheetNames: workbook.sheetNames,
       isConfigured: true,
-      spreadsheetId: receptionSpreadsheetId,
-      lastSavedAt: getLastSavedTime('reception')
+      lastSavedAt: workbook.lastSavedAt
     });
+  } catch (err: unknown) {
+    return handleErrorResponse(err);
   }
-
-  // Doctor workspace
-  const doctorConfigured = isDoctorConfigured();
-  const doctorSpreadsheetId = getDoctorSpreadsheetId();
-
-  if (doctorConfigured && process.env.GOOGLE_APPS_SCRIPT_URL) {
-    try {
-      const googleResult = await fetchWorkbookFromGoogle('doctor', doctorSpreadsheetId);
-      if (googleResult.success && googleResult.sheets) {
-        setFullWorkbookFromRemote('doctor', googleResult.sheets as Record<string, SheetDefinition>);
-      }
-    } catch (err) {
-      console.warn('Could not fetch Doctor Google Sheets data:', err);
-    }
-  }
-
-  if (sheetParam) {
-    const sheetData = getWorkspaceSheet('doctor', sheetParam);
-    if (!sheetData) {
-      return NextResponse.json({ error: 'Worksheet not found' }, { status: 404 });
-    }
-    return NextResponse.json({
-      workspace: 'doctor',
-      sheet: sheetData,
-      isConfigured: doctorConfigured,
-      lastSavedAt: getLastSavedTime('doctor')
-    });
-  }
-
-  const doctorSheets = getWorkspaceSheets('doctor');
-  return NextResponse.json({
-    workspace: 'doctor',
-    sheets: doctorSheets,
-    sheetNames: Object.keys(doctorSheets),
-    isConfigured: doctorConfigured,
-    spreadsheetId: doctorSpreadsheetId,
-    configMessage: doctorConfigured
-      ? 'Doctor Google Sheets workbook is connected.'
-      : "Doctor's Google Sheets workbook is not yet configured. The doctor's original Excel workbook and its structure will be connected using DOCTOR_SPREADSHEET_ID.",
-    lastSavedAt: getLastSavedTime('doctor')
-  });
 }
 
 export async function POST(req: NextRequest) {
-  const user = getAuthenticatedUser(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
-  }
-
   try {
-    const body = await req.json();
-    const workspaceParam = body.workspace;
-    if (workspaceParam !== 'reception' && workspaceParam !== 'doctor') {
-      return NextResponse.json({ error: 'Invalid or missing workspace parameter in request body.' }, { status: 400 });
-    }
-    const workspace: WorkspaceType = workspaceParam;
-    const action = body.action || 'save';
+    const supabase = await createClient();
+    const verification = await verifyActiveStaff(supabase);
 
-    // 1. Action: CREATE_WORKSHEET
+    if (verification.status === 'unauthenticated') {
+      return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
+    }
+    if (verification.status === 'unauthorized') {
+      return NextResponse.json({ error: verification.error }, { status: 403 });
+    }
+    if (verification.status === 'error') {
+      return NextResponse.json({ error: verification.error }, { status: 500 });
+    }
+
+    const staff = verification.user;
+
+    let body: Record<string, unknown>;
+    try {
+      body = (await req.json()) as Record<string, unknown>;
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON request body.' }, { status: 400 });
+    }
+
+    const workspaceParam = body.workspace;
+    if (!isValidWorkspace(workspaceParam)) {
+      return NextResponse.json(
+        { error: 'Invalid or missing workspace parameter in request body.' },
+        { status: 400 }
+      );
+    }
+
+    if (!canRoleAccessWorkspace(staff.role, workspaceParam)) {
+      return NextResponse.json(
+        { error: `Forbidden: ${staff.role} role cannot modify the ${workspaceParam} workspace.` },
+        { status: 403 }
+      );
+    }
+
+    const action = typeof body.action === 'string' ? body.action : '';
+
+    // 1. Create new worksheet
     if (action === 'create_sheet') {
-      const sheetName = String(body.sheetName || '').trim();
+      const sheetName = typeof body.sheetName === 'string' ? body.sheetName.trim() : '';
       if (!sheetName) {
         return NextResponse.json({ error: 'Worksheet name cannot be empty.' }, { status: 400 });
       }
 
-      const result = createWorkspaceSheet(workspace, sheetName, body.headers);
-      if (!result.success) {
-        return NextResponse.json({ error: result.error || 'Failed to create worksheet.' }, { status: 400 });
+      let headers: string[] | undefined;
+      if (body.headers !== undefined) {
+        if (!Array.isArray(body.headers) || !body.headers.every((h) => typeof h === 'string')) {
+          return NextResponse.json({ error: 'headers must be an array of strings.' }, { status: 400 });
+        }
+        headers = body.headers;
       }
 
-      let googleSyncSuccess = true;
-      let googleSyncMessage = 'Created in local workspace.';
-
-      if (workspace === 'reception') {
-        const receptionSpreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || '11rBhezcklOndIPa7YAHr3zIBh6WCXkp2235slmirnlI';
-        if (process.env.GOOGLE_APPS_SCRIPT_URL) {
-          const syncRes = await createWorksheetInGoogle(workspace, sheetName, body.headers || [], receptionSpreadsheetId);
-          googleSyncSuccess = syncRes.success;
-          googleSyncMessage = syncRes.message;
-        }
-      } else if (workspace === 'doctor') {
-        const doctorSpreadsheetId = getDoctorSpreadsheetId();
-        if (isDoctorConfigured() && process.env.GOOGLE_APPS_SCRIPT_URL) {
-          const syncRes = await createWorksheetInGoogle(workspace, sheetName, body.headers || [], doctorSpreadsheetId);
-          googleSyncSuccess = syncRes.success;
-          googleSyncMessage = syncRes.message;
-        }
-      }
-
-      const updatedSheets = getWorkspaceSheets(workspace);
+      const created = await createWorkspaceSheetRpc(supabase, workspaceParam, sheetName, headers);
       return NextResponse.json({
         success: true,
-        workspace,
-        createdSheet: sheetName,
-        sheets: updatedSheets,
-        sheetNames: Object.keys(updatedSheets),
-        googleSyncSuccess,
-        message: googleSyncSuccess ? 'Worksheet created successfully.' : `Created (${googleSyncMessage})`
+        workspace: workspaceParam,
+        createdSheet: created.name,
+        sheet: created,
+        message: 'Worksheet created successfully.'
       });
     }
 
-    // 2. Action: SAVE_WORKBOOK
-    if (body.sheets && typeof body.sheets === 'object') {
-      const sheetsToSave = body.sheets as Record<string, (string | number)[][]>;
-      updateWorkspaceWorkbook(workspace, sheetsToSave);
+    // 2. Patch single cell with mandatory optimistic concurrency version
+    if (action === 'patch_cell') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      const rowIndex = body.rowIndex;
+      const colIndex = body.colIndex;
+      const value = body.value;
+      const expectedCellVersion = body.expectedCellVersion;
 
-      let googleSyncMessage = 'Saved locally.';
-      let googleSyncSuccess = true;
-
-      if (workspace === 'reception') {
-        const receptionSpreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || '11rBhezcklOndIPa7YAHr3zIBh6WCXkp2235slmirnlI';
-        if (process.env.GOOGLE_APPS_SCRIPT_URL) {
-          const syncRes = await syncEntireWorkbookToGoogle(workspace, sheetsToSave, receptionSpreadsheetId);
-          googleSyncSuccess = syncRes.success;
-          googleSyncMessage = syncRes.message;
-        }
-      } else if (workspace === 'doctor') {
-        const doctorSpreadsheetId = getDoctorSpreadsheetId();
-        if (isDoctorConfigured() && process.env.GOOGLE_APPS_SCRIPT_URL) {
-          const syncRes = await syncEntireWorkbookToGoogle(workspace, sheetsToSave, doctorSpreadsheetId);
-          googleSyncSuccess = syncRes.success;
-          googleSyncMessage = syncRes.message;
-        } else {
-          googleSyncMessage = 'Saved to Doctor workspace. Google Sheets workbook not connected yet.';
-        }
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
       }
+      if (!isNonNegativeInt(rowIndex) || rowIndex >= 100000) {
+        return NextResponse.json({ error: 'rowIndex must be an integer between 0 and 99999.' }, { status: 400 });
+      }
+      if (!isNonNegativeInt(colIndex) || colIndex >= 256) {
+        return NextResponse.json({ error: 'colIndex must be an integer between 0 and 255.' }, { status: 400 });
+      }
+      if (!isValidCellScalar(value)) {
+        return NextResponse.json({ error: 'value must be a string or finite number.' }, { status: 400 });
+      }
+      if (!isNonNegativeInt(expectedCellVersion)) {
+        return NextResponse.json(
+          { error: 'expectedCellVersion is required and must be a non-negative integer.' },
+          { status: 400 }
+        );
+      }
+
+      const result = await patchWorkspaceCellRpc(supabase, workspaceParam, sheetId, {
+        rowIndex,
+        colIndex,
+        value,
+        expectedCellVersion
+      });
 
       return NextResponse.json({
         success: true,
-        workspace,
-        message: googleSyncSuccess ? 'Saved' : `Saved locally (${googleSyncMessage})`,
-        googleSyncSuccess,
-        lastSavedAt: getLastSavedTime(workspace)
+        workspace: workspaceParam,
+        ...result
       });
     }
 
-    // 3. Action: SAVE SINGLE SHEET
-    if (body.sheet && body.rows && Array.isArray(body.rows)) {
-      const { sheet, rows, headers } = body;
-      updateWorkspaceWorkbook(workspace, { [sheet]: { headers: headers || [], rows } });
-
-      let googleSyncMessage = 'Saved locally.';
-      let googleSyncSuccess = true;
-
-      if (workspace === 'reception') {
-        const receptionSpreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || '11rBhezcklOndIPa7YAHr3zIBh6WCXkp2235slmirnlI';
-        if (process.env.GOOGLE_APPS_SCRIPT_URL) {
-          const syncRes = await syncSheetToGoogle(workspace, sheet, headers || [], rows, receptionSpreadsheetId);
-          googleSyncSuccess = syncRes.success;
-          googleSyncMessage = syncRes.message;
-        }
-      } else if (workspace === 'doctor') {
-        const doctorSpreadsheetId = getDoctorSpreadsheetId();
-        if (isDoctorConfigured() && process.env.GOOGLE_APPS_SCRIPT_URL) {
-          const syncRes = await syncSheetToGoogle(workspace, sheet, headers || [], rows, doctorSpreadsheetId);
-          googleSyncSuccess = syncRes.success;
-          googleSyncMessage = syncRes.message;
-        } else {
-          googleSyncMessage = 'Saved to Doctor workspace.';
-        }
+    // 3. Patch batch of cells atomically with mandatory expectedCellVersion per cell
+    if (action === 'patch_cells_batch') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
       }
+
+      if (!Array.isArray(body.edits) || body.edits.length === 0 || body.edits.length > 500) {
+        return NextResponse.json(
+          { error: 'edits must be a non-empty array of 1..500 cell edits.' },
+          { status: 400 }
+        );
+      }
+
+      const validatedEdits: CellEditInput[] = [];
+      for (let i = 0; i < body.edits.length; i++) {
+        const item = body.edits[i] as Record<string, unknown> | null;
+        if (!item || typeof item !== 'object') {
+          return NextResponse.json({ error: `Invalid edit object at index ${i}.` }, { status: 400 });
+        }
+        if (!isNonNegativeInt(item.rowIndex) || item.rowIndex >= 100000) {
+          return NextResponse.json({ error: `Invalid rowIndex at edit index ${i}.` }, { status: 400 });
+        }
+        if (!isNonNegativeInt(item.colIndex) || item.colIndex >= 256) {
+          return NextResponse.json({ error: `Invalid colIndex at edit index ${i}.` }, { status: 400 });
+        }
+        if (!isValidCellScalar(item.value)) {
+          return NextResponse.json({ error: `Invalid cell value at edit index ${i}.` }, { status: 400 });
+        }
+        if (!isNonNegativeInt(item.expectedCellVersion)) {
+          return NextResponse.json(
+            { error: `Missing or invalid expectedCellVersion at edit index ${i}.` },
+            { status: 400 }
+          );
+        }
+        validatedEdits.push({
+          rowIndex: item.rowIndex,
+          colIndex: item.colIndex,
+          value: item.value,
+          expectedCellVersion: item.expectedCellVersion
+        });
+      }
+
+      const result = await patchWorkspaceCellsBatchRpc(supabase, workspaceParam, sheetId, validatedEdits);
 
       return NextResponse.json({
         success: true,
-        workspace,
-        message: googleSyncSuccess ? 'Saved' : `Saved locally (${googleSyncMessage})`,
-        googleSyncSuccess,
-        lastSavedAt: getLastSavedTime(workspace)
+        workspace: workspaceParam,
+        ...result
       });
     }
 
-    return NextResponse.json({ error: 'Invalid save payload.' }, { status: 400 });
+    // 4. Patch header cell with mandatory expectedHeaderVersion
+    if (action === 'patch_header') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      const colIndex = body.colIndex;
+      const newHeader = body.newHeader;
+      const expectedHeaderVersion = body.expectedHeaderVersion;
+
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+      if (!isNonNegativeInt(colIndex) || colIndex >= 256) {
+        return NextResponse.json({ error: 'colIndex must be an integer between 0 and 255.' }, { status: 400 });
+      }
+      if (typeof newHeader !== 'string') {
+        return NextResponse.json({ error: 'newHeader must be a string.' }, { status: 400 });
+      }
+      if (!isNonNegativeInt(expectedHeaderVersion) || expectedHeaderVersion < 1) {
+        return NextResponse.json(
+          { error: 'expectedHeaderVersion is required and must be >= 1.' },
+          { status: 400 }
+        );
+      }
+
+      const result = await patchWorkspaceHeaderRpc(
+        supabase,
+        workspaceParam,
+        sheetId,
+        colIndex,
+        newHeader,
+        expectedHeaderVersion
+      );
+
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
+    return NextResponse.json(
+      {
+        error:
+          'Invalid or unsupported action. Supported actions: create_sheet, patch_cell, patch_cells_batch, patch_header.'
+      },
+      { status: 400 }
+    );
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Save error';
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return handleErrorResponse(err);
   }
 }

@@ -1,26 +1,43 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { verifySessionToken } from '@/lib/auth';
+import { NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { verifyActiveStaff } from '@/lib/auth';
 
-export async function GET(req: NextRequest) {
-  const sessionCookie = req.cookies.get('mk_session')?.value;
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'private, no-cache, no-store, must-revalidate, max-age=0'
+};
 
-  if (!sessionCookie) {
-    return NextResponse.json({ authenticated: false }, { status: 401 });
-  }
+export async function GET() {
+  try {
+    const supabase = await createClient();
+    const verification = await verifyActiveStaff(supabase);
 
-  const payload = verifySessionToken(sessionCookie);
-  if (!payload) {
-    return NextResponse.json({ authenticated: false, error: 'Session expired or invalid' }, { status: 401 });
-  }
-
-  return NextResponse.json({
-    authenticated: true,
-    user: {
-      id: payload.userId,
-      username: payload.username,
-      name: payload.name,
-      role: payload.role,
-      title: payload.title
+    if (verification.status === 'unauthenticated') {
+      return NextResponse.json({ authenticated: false }, { status: 401, headers: NO_STORE_HEADERS });
     }
-  });
+
+    if (verification.status === 'unauthorized') {
+      return NextResponse.json(
+        { authenticated: false, error: verification.error },
+        { status: 403, headers: NO_STORE_HEADERS }
+      );
+    }
+
+    if (verification.status === 'error') {
+      return NextResponse.json(
+        { authenticated: false, error: verification.error },
+        { status: 500, headers: NO_STORE_HEADERS }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        authenticated: true,
+        user: verification.user
+      },
+      { headers: NO_STORE_HEADERS }
+    );
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Session verification error';
+    return NextResponse.json({ authenticated: false, error: msg }, { status: 500, headers: NO_STORE_HEADERS });
+  }
 }

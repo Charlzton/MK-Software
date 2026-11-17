@@ -1,46 +1,116 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { LoginCard } from '@/components/LoginCard';
 import { ExcelSpreadsheet, SheetState } from '@/components/ExcelSpreadsheet';
-import { INITIAL_WORKBOOK } from '@/lib/data/rawWorkbookData';
-import { INITIAL_DOCTOR_WORKBOOK } from '@/lib/data/rawDoctorWorkbookData';
+import { createClient as createBrowserSupabaseClient } from '@/lib/supabase/client';
 import { User } from '@/lib/types';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+
+type WorkspaceKey = 'reception' | 'doctor';
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
-  // Active workspace: 'reception' or 'doctor'
-  const [activeWorkspace, setActiveWorkspace] = useState<'reception' | 'doctor'>('reception');
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceKey>('reception');
 
-  // Separate sheets state for Reception & Doctor
-  const [receptionSheets, setReceptionSheets] = useState<Record<string, SheetState>>(INITIAL_WORKBOOK);
-  const [doctorSheets, setDoctorSheets] = useState<Record<string, SheetState>>(INITIAL_DOCTOR_WORKBOOK);
+  // Persisted workspace data loaded exclusively from Supabase via /api/records
+  const [receptionSheets, setReceptionSheets] = useState<Record<string, SheetState>>({});
+  const [doctorSheets, setDoctorSheets] = useState<Record<string, SheetState>>({});
 
-  // Unsaved status tracking for each workspace
+  const [isLoadingReception, setIsLoadingReception] = useState(false);
+  const [isLoadingDoctor, setIsLoadingDoctor] = useState(false);
+  const [receptionLoadError, setReceptionLoadError] = useState<string | null>(null);
+  const [doctorLoadError, setDoctorLoadError] = useState<string | null>(null);
+
   const [receptionHasUnsaved, setReceptionHasUnsaved] = useState(false);
   const [doctorHasUnsaved, setDoctorHasUnsaved] = useState(false);
 
-  // Doctor workbook configuration status
-  const [isDoctorConfigured, setIsDoctorConfigured] = useState(false);
-  const [doctorConfigNotice, setDoctorConfigNotice] = useState<string | undefined>(undefined);
-
-  // Unsaved changes confirmation dialog state
   const [showSwitchWarning, setShowSwitchWarning] = useState(false);
-  const [pendingWorkspaceSwitch, setPendingWorkspaceSwitch] = useState<'reception' | 'doctor' | null>(null);
+  const [pendingWorkspaceSwitch, setPendingWorkspaceSwitch] = useState<WorkspaceKey | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [isImportConfirmOpen, setIsImportConfirmOpen] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importNotice, setImportNotice] = useState<{
+    type: 'success' | 'info' | 'error';
+    message: string;
+  } | null>(null);
+
+  const allowedWorkspaces = useMemo<WorkspaceKey[]>(() => {
+    if (!user) return [];
+    if (user.role === 'admin') return ['reception', 'doctor'];
+    if (user.role === 'doctor') return ['doctor'];
+    return ['reception'];
+  }, [user]);
+
+  // Verify browser Supabase client initialization cleanly when client app mounts
+  useEffect(() => {
+    try {
+      createBrowserSupabaseClient();
+    } catch (err) {
+      console.error(
+        'Browser Supabase client initialization failed:',
+        err instanceof Error ? err.message : 'Configuration missing'
+      );
+    }
+  }, []);
+
+  const fetchWorkspace = useCallback(async (workspace: WorkspaceKey) => {
+    const setLoading = workspace === 'reception' ? setIsLoadingReception : setIsLoadingDoctor;
+    const setLoadError = workspace === 'reception' ? setReceptionLoadError : setDoctorLoadError;
+    const setSheets = workspace === 'reception' ? setReceptionSheets : setDoctorSheets;
+
+    setLoading(true);
+    setLoadError(null);
+
+    try {
+      const res = await fetch(`/api/records?workspace=${workspace}`);
+      if (res.status === 401) {
+        setSessionError(
+          'Your session could not be verified on workspace load. Please ensure cookies are enabled and sign in again.'
+        );
+        setUser(null);
+        setReceptionSheets({});
+        setDoctorSheets({});
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Failed to load ${workspace} workbook.`);
+      }
+      setSheets(data.sheets || {});
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : `Failed to load ${workspace} workbook.`;
+      setLoadError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadAuthorizedWorkspaces = useCallback(
+    (authenticatedUser: User) => {
+      if (authenticatedUser.role === 'doctor') {
+        void fetchWorkspace('doctor');
+      } else if (authenticatedUser.role === 'reception') {
+        void fetchWorkspace('reception');
+      } else {
+        void fetchWorkspace('reception');
+        void fetchWorkspace('doctor');
+      }
+    },
+    [fetchWorkspace]
+  );
 
   // Check existing session on load
   useEffect(() => {
     fetch('/api/auth/me')
-      .then((res) => {
-        if (res.ok) return res.json();
-        return null;
-      })
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && data.authenticated && data.user) {
           setUser(data.user);
+          setActiveWorkspace(data.user.role === 'doctor' ? 'doctor' : 'reception');
+          loadAuthorizedWorkspaces(data.user);
         }
       })
       .catch(() => {
@@ -49,45 +119,13 @@ export default function Home() {
       .finally(() => {
         setIsCheckingAuth(false);
       });
-  }, []);
-
-  // Fetch full sheets data for Reception & Doctor when user is authenticated
-  useEffect(() => {
-    if (user) {
-      // 1. Fetch Reception sheets
-      fetch('/api/records?workspace=reception')
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (data && data.sheets) {
-            setReceptionSheets(data.sheets);
-          }
-        })
-        .catch((err) => {
-          console.error('Error loading Reception sheets:', err);
-        });
-
-      // 2. Fetch Doctor sheets
-      fetch('/api/records?workspace=doctor')
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (data) {
-            if (data.sheets) {
-              setDoctorSheets(data.sheets);
-            }
-            setIsDoctorConfigured(Boolean(data.isConfigured));
-            if (data.configMessage) {
-              setDoctorConfigNotice(data.configMessage);
-            }
-          }
-        })
-        .catch((err) => {
-          console.error('Error loading Doctor sheets:', err);
-        });
-    }
-  }, [user]);
+  }, [loadAuthorizedWorkspaces]);
 
   const handleLoginSuccess = (authenticatedUser: User) => {
+    setSessionError(null);
     setUser(authenticatedUser);
+    setActiveWorkspace(authenticatedUser.role === 'doctor' ? 'doctor' : 'reception');
+    loadAuthorizedWorkspaces(authenticatedUser);
   };
 
   const handleLogout = async () => {
@@ -96,13 +134,68 @@ export default function Home() {
     } catch {
       // ignore
     }
+    setSessionError(null);
+    setImportNotice(null);
+    setIsImportConfirmOpen(false);
     setUser(null);
+    setReceptionSheets({});
+    setDoctorSheets({});
+    setReceptionHasUnsaved(false);
+    setDoctorHasUnsaved(false);
   };
 
-  // Handle workspace tab switch request
+  const handleRequestInitialImport = useCallback(() => {
+    if (user?.role !== 'admin') return;
+    setImportNotice(null);
+    setIsImportConfirmOpen(true);
+  }, [user?.role]);
+
+  const handleConfirmInitialImport = async () => {
+    if (user?.role !== 'admin') return;
+    setIsImporting(true);
+    setImportNotice(null);
+
+    try {
+      const res = await fetch('/api/records/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true })
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Initial workbook import failed.');
+      }
+
+      const recSheets = Number(data.receptionSheets ?? 0);
+      const recRows = Number(data.receptionRows ?? 0);
+      const docSheets = Number(data.doctorSheets ?? 0);
+      const docRows = Number(data.doctorRows ?? 0);
+      const totalSheets = Number(data.totalSheets ?? recSheets + docSheets);
+      const totalRows = Number(data.totalRows ?? recRows + docRows);
+
+      setImportNotice({
+        type: data.alreadyImported ? 'info' : 'success',
+        message: data.alreadyImported
+          ? `Historical workbooks were already imported (${totalSheets} worksheets, ${totalRows} rows — Reception: ${recSheets} sheets / ${recRows} rows, Doctor: ${docSheets} sheets / ${docRows} rows).`
+          : `Successfully imported ${totalSheets} worksheets and ${totalRows} rows into Supabase (Reception: ${recSheets} sheets / ${recRows} rows, Doctor: ${docSheets} sheets / ${docRows} rows).`
+      });
+
+      setIsImportConfirmOpen(false);
+      await Promise.all([fetchWorkspace('reception'), fetchWorkspace('doctor')]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Initial workbook import failed.';
+      setImportNotice({ type: 'error', message: msg });
+      setIsImportConfirmOpen(false);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   const handleWorkspaceSwitchRequest = useCallback(
-    (targetWorkspace: 'reception' | 'doctor') => {
+    (targetWorkspace: WorkspaceKey) => {
       if (targetWorkspace === activeWorkspace) return;
+      if (!allowedWorkspaces.includes(targetWorkspace)) return;
 
       const currentHasUnsaved = activeWorkspace === 'reception' ? receptionHasUnsaved : doctorHasUnsaved;
 
@@ -113,11 +206,11 @@ export default function Home() {
         setActiveWorkspace(targetWorkspace);
       }
     },
-    [activeWorkspace, receptionHasUnsaved, doctorHasUnsaved]
+    [activeWorkspace, allowedWorkspaces, receptionHasUnsaved, doctorHasUnsaved]
   );
 
   const confirmSwitchAnyway = () => {
-    if (pendingWorkspaceSwitch) {
+    if (pendingWorkspaceSwitch && allowedWorkspaces.includes(pendingWorkspaceSwitch)) {
       setActiveWorkspace(pendingWorkspaceSwitch);
       setPendingWorkspaceSwitch(null);
     }
@@ -142,43 +235,71 @@ export default function Home() {
   if (!user) {
     return (
       <main className="min-h-screen flex items-center justify-center p-4 bg-white">
-        <LoginCard onSuccess={handleLoginSuccess} />
+        <LoginCard onSuccess={handleLoginSuccess} externalError={sessionError} />
       </main>
     );
   }
 
+  const canAccessReception = allowedWorkspaces.includes('reception');
+  const canAccessDoctor = allowedWorkspaces.includes('doctor');
+  const isAdmin = user.role === 'admin';
+  const canAdminImport =
+    isAdmin &&
+    !isLoadingReception &&
+    !isLoadingDoctor &&
+    !receptionLoadError &&
+    !doctorLoadError &&
+    Object.keys(receptionSheets).length === 0 &&
+    Object.keys(doctorSheets).length === 0;
+
   return (
     <>
-      {/* Reception Workspace Container */}
-      <div className={activeWorkspace === 'reception' ? 'block h-screen w-full' : 'hidden'}>
-        <ExcelSpreadsheet
-          workspace="reception"
-          initialSheets={receptionSheets}
-          activeWorkspace={activeWorkspace}
-          onWorkspaceSwitchRequest={handleWorkspaceSwitchRequest}
-          onUnsavedStatusChange={setReceptionHasUnsaved}
-          onLogout={handleLogout}
-          isConfigured={true}
-          defaultSheetName="PATIENT'S DATA"
-        />
-      </div>
+      {canAccessReception && (
+        <div className={activeWorkspace === 'reception' ? 'block h-screen w-full' : 'hidden'}>
+          <ExcelSpreadsheet
+            workspace="reception"
+            user={user}
+            allowedWorkspaces={allowedWorkspaces}
+            initialSheets={receptionSheets}
+            activeWorkspace={activeWorkspace}
+            onWorkspaceSwitchRequest={handleWorkspaceSwitchRequest}
+            onUnsavedStatusChange={setReceptionHasUnsaved}
+            onReloadWorkspace={() => fetchWorkspace('reception')}
+            onLogout={handleLogout}
+            isLoading={isLoadingReception}
+            loadError={receptionLoadError}
+            defaultSheetName="PATIENT'S DATA"
+            canAdminImport={canAdminImport}
+            onRequestInitialImport={isAdmin ? handleRequestInitialImport : undefined}
+            importNotice={isAdmin ? importNotice : null}
+            onDismissImportNotice={isAdmin ? () => setImportNotice(null) : undefined}
+          />
+        </div>
+      )}
 
-      {/* Doctor Workspace Container */}
-      <div className={activeWorkspace === 'doctor' ? 'block h-screen w-full' : 'hidden'}>
-        <ExcelSpreadsheet
-          workspace="doctor"
-          initialSheets={doctorSheets}
-          activeWorkspace={activeWorkspace}
-          onWorkspaceSwitchRequest={handleWorkspaceSwitchRequest}
-          onUnsavedStatusChange={setDoctorHasUnsaved}
-          onLogout={handleLogout}
-          isConfigured={isDoctorConfigured}
-          configNotice={doctorConfigNotice}
-          defaultSheetName="Lens Rx"
-        />
-      </div>
+      {canAccessDoctor && (
+        <div className={activeWorkspace === 'doctor' ? 'block h-screen w-full' : 'hidden'}>
+          <ExcelSpreadsheet
+            workspace="doctor"
+            user={user}
+            allowedWorkspaces={allowedWorkspaces}
+            initialSheets={doctorSheets}
+            activeWorkspace={activeWorkspace}
+            onWorkspaceSwitchRequest={handleWorkspaceSwitchRequest}
+            onUnsavedStatusChange={setDoctorHasUnsaved}
+            onReloadWorkspace={() => fetchWorkspace('doctor')}
+            onLogout={handleLogout}
+            isLoading={isLoadingDoctor}
+            loadError={doctorLoadError}
+            defaultSheetName="Lens Rx"
+            canAdminImport={canAdminImport}
+            onRequestInitialImport={isAdmin ? handleRequestInitialImport : undefined}
+            importNotice={isAdmin ? importNotice : null}
+            onDismissImportNotice={isAdmin ? () => setImportNotice(null) : undefined}
+          />
+        </div>
+      )}
 
-      {/* Warning Dialog when switching away from a workspace with unsaved edits */}
       <ConfirmDialog
         isOpen={showSwitchWarning}
         title="Unsaved Changes"
@@ -190,6 +311,21 @@ export default function Home() {
         onConfirm={confirmSwitchAnyway}
         onCancel={cancelSwitch}
       />
+
+      {isAdmin && (
+        <ConfirmDialog
+          isOpen={isImportConfirmOpen}
+          title="Import Initial Workbooks"
+          message="This one-time administrator action imports both Reception (4 worksheets, 545 rows) and Doctor (9 worksheets, 319 rows) historical workbooks into Supabase in a single atomic transaction (13 worksheets, 864 rows total). Existing live data will never be overwritten."
+          confirmLabel={isImporting ? 'Importing...' : 'Import Both Workbooks'}
+          confirmVariant="primary"
+          isLoading={isImporting}
+          onConfirm={() => void handleConfirmInitialImport()}
+          onCancel={() => {
+            if (!isImporting) setIsImportConfirmOpen(false);
+          }}
+        />
+      )}
     </>
   );
 }

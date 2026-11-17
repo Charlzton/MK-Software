@@ -5,18 +5,20 @@ import { User } from '@/lib/types';
 
 interface LoginCardProps {
   onSuccess: (user: User) => void;
+  externalError?: string | null;
 }
 
-export function LoginCard({ onSuccess }: LoginCardProps) {
-  const [username, setUsername] = useState('');
+export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password) {
-      setError('Please enter both username and password.');
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
+      setError('Please enter both email and password.');
       return;
     }
 
@@ -27,7 +29,7 @@ export function LoginCard({ onSuccess }: LoginCardProps) {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ email: trimmedEmail, password })
       });
 
       const data = await res.json();
@@ -47,6 +49,8 @@ export function LoginCard({ onSuccess }: LoginCardProps) {
     }
   };
 
+  const displayedError = error || externalError;
+
   return (
     <div className="w-full max-w-sm mx-auto p-8 bg-white border border-slate-300 rounded shadow-md">
       <div className="text-center mb-6">
@@ -55,21 +59,21 @@ export function LoginCard({ onSuccess }: LoginCardProps) {
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        {error && (
+        {displayedError && (
           <div className="p-2.5 text-xs text-red-700 bg-red-50 border border-red-200 rounded">
-            {error}
+            {displayedError}
           </div>
         )}
 
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">Username</label>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Email</label>
           <input
-            type="text"
-            placeholder="e.g. admin"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            type="email"
+            placeholder="staff@mkeyecenter.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
             disabled={isLoading}
-            autoComplete="username"
+            autoComplete="email"
             required
             className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:border-slate-800 focus:ring-1 focus:ring-slate-800"
           />
@@ -96,12 +100,6 @@ export function LoginCard({ onSuccess }: LoginCardProps) {
         >
           {isLoading ? 'Signing In...' : 'Sign In to Workspaces'}
         </button>
-
-        <div className="mt-4 pt-4 border-t border-slate-200 text-center">
-          <p className="text-[11px] text-slate-500">
-            Default staff login: <span className="font-mono font-medium text-slate-700">admin</span> / <span className="font-mono font-medium text-slate-700">mk123</span>
-          </p>
-        </div>
       </form>
     </div>
   );
