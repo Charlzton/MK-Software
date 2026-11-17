@@ -234,8 +234,30 @@ export default function Home() {
 
   if (!user) {
     return (
-      <main className="min-h-screen flex items-center justify-center p-4 bg-white">
-        <LoginCard onSuccess={handleLoginSuccess} externalError={sessionError} />
+      <main className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden bg-slate-950">
+        {/* Background image covering viewport */}
+        <div
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+          style={{ backgroundImage: `url('/assets/aistudio/login_bg_de335fe2.jpg')` }}
+        >
+          <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-xs" />
+        </div>
+
+        {/* Top-left official logo */}
+        <div className="absolute top-6 left-6 z-10">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/assets/aistudio/mk_long_logo_a5863dd4.png"
+            alt="MK Eye Center Logo"
+            className="h-10 sm:h-12 w-auto object-contain bg-white/95 px-4 py-2 rounded-xl shadow-lg border border-white/20"
+            referrerPolicy="no-referrer"
+          />
+        </div>
+
+        {/* Glassmorphism Login Card Container */}
+        <div className="relative z-10 w-full max-w-md mx-auto px-4">
+          <LoginCard onSuccess={handleLoginSuccess} externalError={sessionError} />
+        </div>
       </main>
     );
   }

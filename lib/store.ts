@@ -13,6 +13,7 @@ export interface WorkspaceSheetState {
   rows: (string | number)[][];
   rowVersions: Record<number, number>;
   cellVersions: Record<number, Record<number, number>>;
+  rowUpdatedAt?: Record<number, string>;
 }
 
 export interface WorkspaceWorkbookResult {
@@ -208,34 +209,50 @@ function normalizeSheetRecord(rawSheet: RawSheetRecord, fallbackName: string, fa
   const rows: (string | number)[][] = [];
   const rowVersions: Record<number, number> = {};
   const cellVersions: Record<number, Record<number, number>> = {};
+  const rowUpdatedAt: Record<number, string> = {};
 
   if (Array.isArray(rawSheet.rows)) {
     const parsedRows = rawSheet.rows
-      .map((entry, idx): { rowIndex: number; cells: (string | number)[]; rowVersion: number; cellVersions: Record<number, number> } | null => {
-        if (Array.isArray(entry)) {
-          return {
-            rowIndex: idx,
-            cells: entry.map(normalizeCellScalar),
-            rowVersion: 1,
-            cellVersions: {}
-          };
+      .map(
+        (
+          entry,
+          idx
+        ): {
+          rowIndex: number;
+          cells: (string | number)[];
+          rowVersion: number;
+          cellVersions: Record<number, number>;
+          updatedAt?: string;
+        } | null => {
+          if (Array.isArray(entry)) {
+            return {
+              rowIndex: idx,
+              cells: entry.map(normalizeCellScalar),
+              rowVersion: 1,
+              cellVersions: {}
+            };
+          }
+          if (entry && typeof entry === 'object') {
+            const rec = entry as RawRowRecord;
+            const rowIndexVal = Number(rec.row_index ?? rec.rowIndex ?? idx);
+            if (!Number.isInteger(rowIndexVal) || rowIndexVal < 0) return null;
+            const cellsArr = Array.isArray(rec.cells) ? rec.cells.map(normalizeCellScalar) : [];
+            const rowVer = Number(rec.row_version ?? rec.rowVersion ?? 1);
+            const cellVerMap = normalizeCellVersionsMap(rec.cell_versions ?? rec.cellVersions);
+            const rawUpdated = rec.updated_at ?? rec.updatedAt;
+            const updatedAt =
+              typeof rawUpdated === 'string' && rawUpdated.trim() !== '' ? rawUpdated : undefined;
+            return {
+              rowIndex: rowIndexVal,
+              cells: cellsArr,
+              rowVersion: Number.isFinite(rowVer) && rowVer >= 1 ? rowVer : 1,
+              cellVersions: cellVerMap,
+              updatedAt
+            };
+          }
+          return null;
         }
-        if (entry && typeof entry === 'object') {
-          const rec = entry as RawRowRecord;
-          const rowIndexVal = Number(rec.row_index ?? rec.rowIndex ?? idx);
-          if (!Number.isInteger(rowIndexVal) || rowIndexVal < 0) return null;
-          const cellsArr = Array.isArray(rec.cells) ? rec.cells.map(normalizeCellScalar) : [];
-          const rowVer = Number(rec.row_version ?? rec.rowVersion ?? 1);
-          const cellVerMap = normalizeCellVersionsMap(rec.cell_versions ?? rec.cellVersions);
-          return {
-            rowIndex: rowIndexVal,
-            cells: cellsArr,
-            rowVersion: Number.isFinite(rowVer) && rowVer >= 1 ? rowVer : 1,
-            cellVersions: cellVerMap
-          };
-        }
-        return null;
-      })
+      )
       .filter((r): r is NonNullable<typeof r> => r !== null)
       .sort((a, b) => a.rowIndex - b.rowIndex);
 
@@ -246,6 +263,9 @@ function normalizeSheetRecord(rawSheet: RawSheetRecord, fallbackName: string, fa
       rows[r.rowIndex] = r.cells;
       rowVersions[r.rowIndex] = r.rowVersion;
       cellVersions[r.rowIndex] = r.cellVersions;
+      if (r.updatedAt) {
+        rowUpdatedAt[r.rowIndex] = r.updatedAt;
+      }
     }
   }
 
@@ -258,7 +278,8 @@ function normalizeSheetRecord(rawSheet: RawSheetRecord, fallbackName: string, fa
     headerVersion: Number.isFinite(headerVersion) && headerVersion >= 1 ? headerVersion : 1,
     rows,
     rowVersions,
-    cellVersions
+    cellVersions,
+    rowUpdatedAt
   };
 }
 

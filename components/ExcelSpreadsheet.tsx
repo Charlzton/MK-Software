@@ -3,6 +3,14 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { User } from '@/lib/types';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
+import type { WorkspaceSheetState } from '@/lib/store';
+import { exportSheetsToExcel } from '@/lib/excelUtils';
+import {
+  getColumnVisualMeta,
+  ClinicalColumnCategory,
+  ColumnVisualMeta
+} from '@/lib/clinicalColumns';
 
 export interface SheetState {
   id?: string;
@@ -13,6 +21,7 @@ export interface SheetState {
   rows: (string | number)[][];
   rowVersions?: Record<number, number>;
   cellVersions?: Record<number, Record<number, number>>;
+  rowUpdatedAt?: Record<number, string>;
 }
 
 interface DirtyCellEdit {
@@ -30,6 +39,16 @@ interface DirtyHeaderEdit {
   colIndex: number;
   newHeader: string;
   expectedHeaderVersion: number;
+}
+
+type SelectionMode = 'cell' | 'range' | 'row' | 'col' | 'all';
+
+interface SelectionState {
+  mode: SelectionMode;
+  anchorRow: number;
+  anchorCol: number;
+  focusRow: number;
+  focusCol: number;
 }
 
 export interface ExcelSpreadsheetProps {
@@ -51,6 +70,16 @@ export interface ExcelSpreadsheetProps {
   onDismissImportNotice?: () => void;
 }
 
+const ROW_HEADER_COL_WIDTH = 48;
+const DEFAULT_COL_WIDTH = 110;
+const MIN_COL_WIDTH = 56;
+const MAX_COL_WIDTH = 600;
+const DEFAULT_DATA_ROW_HEIGHT = 28;
+const DEFAULT_HEADER_ROW_HEIGHT = 34;
+const MIN_ROW_HEIGHT = 24;
+const MAX_ROW_HEIGHT = 320;
+const MAX_COLS_LIMIT = 256;
+
 function getColumnLetter(colIndex: number): string {
   let temp = colIndex;
   let letter = '';
@@ -60,6 +89,253 @@ function getColumnLetter(colIndex: number): string {
   }
   return letter;
 }
+
+function isNonEmptyCell(val: unknown): boolean {
+  return val !== '' && val !== null && val !== undefined;
+}
+
+function getAlignmentClass(align: 'left' | 'center' | 'right'): string {
+  if (align === 'center') return 'text-center';
+  if (align === 'right') return 'text-right';
+  return 'text-left';
+}
+
+function getClinicalHeaderClasses(
+  category: ClinicalColumnCategory,
+  isSelected: boolean,
+  isDoctorWorkspace: boolean
+): string {
+  if (isSelected) {
+    return 'bg-[#cfe0f5] text-slate-900';
+  }
+  if (!isDoctorWorkspace) {
+    return 'bg-[#e3ebf6] text-slate-900';
+  }
+  switch (category) {
+    case 'patient_id':
+      return 'bg-sky-50 text-slate-900 border-t-2 border-t-sky-600';
+    case 'prescription':
+      return 'bg-indigo-50 text-slate-900 border-t-2 border-t-indigo-600';
+    case 'clinical_finding':
+      return 'bg-teal-50 text-slate-900 border-t-2 border-t-teal-600';
+    case 'medication_treatment':
+      return 'bg-emerald-50 text-slate-900 border-t-2 border-t-emerald-600';
+    case 'surgery':
+      return 'bg-rose-50 text-slate-900 border-t-2 border-t-rose-600';
+    default:
+      return 'bg-[#e3ebf6] text-slate-900';
+  }
+}
+
+function getClinicalCellBgClass(
+  category: ClinicalColumnCategory,
+  isSelected: boolean,
+  isDoctorWorkspace: boolean
+): string {
+  if (isSelected) {
+    return 'bg-sky-100/80';
+  }
+  if (!isDoctorWorkspace) {
+    return 'bg-white';
+  }
+  switch (category) {
+    case 'patient_id':
+      return 'bg-sky-50/25';
+    case 'prescription':
+      return 'bg-indigo-50/25';
+    case 'clinical_finding':
+      return 'bg-teal-50/25';
+    case 'medication_treatment':
+      return 'bg-emerald-50/25';
+    case 'surgery':
+      return 'bg-rose-50/25';
+    default:
+      return 'bg-white';
+  }
+}
+
+/**
+ * Determine which grid row (1 = Excel Row 2, i.e. dataRowIdx = 0) should be opened first:
+ * 1. Most recently updated populated row via rowUpdatedAt timestamps when strictly distinguishable.
+ * 2. Fallback to the highest populated row_index when timestamps are missing or identical.
+ * 3. Fallback to 1 (first data row) when the worksheet has no populated rows.
+ */
+function findLatestRecordGridRow(sheet: SheetState | undefined): number {
+  if (!sheet || !Array.isArray(sheet.rows) || sheet.rows.length === 0) {
+    return 1;
+  }
+
+  let bestDataRowIdx = -1;
+  let bestTimestamp = Number.NEGATIVE_INFINITY;
+
+  for (let dataRowIdx = 0; dataRowIdx < sheet.rows.length; dataRowIdx++) {
+    const row = sheet.rows[dataRowIdx];
+    const hasData = Array.isArray(row) && row.some(isNonEmptyCell);
+    if (!hasData) continue;
+
+    const rawUpdated = sheet.rowUpdatedAt?.[dataRowIdx];
+    const parsedTs = rawUpdated ? Date.parse(rawUpdated) : Number.NaN;
+    const effectiveTs = Number.isFinite(parsedTs) ? parsedTs : Number.NEGATIVE_INFINITY;
+
+    if (
+      bestDataRowIdx === -1 ||
+      effectiveTs > bestTimestamp ||
+      (effectiveTs === bestTimestamp && dataRowIdx > bestDataRowIdx)
+    ) {
+      bestDataRowIdx = dataRowIdx;
+      bestTimestamp = effectiveTs;
+    }
+  }
+
+  return bestDataRowIdx >= 0 ? bestDataRowIdx + 1 : 1;
+}
+
+function parseClipboardTsv(text: string): string[][] {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+  // Trim single trailing newline typically appended by spreadsheets/browsers
+  if (lines.length > 1 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  return lines.map((line) => line.split('\t'));
+}
+
+interface SpreadsheetDataRowProps {
+  gridRowIdx: number;
+  rowCells: (string | number)[] | undefined;
+  totalCols: number;
+  colMetaList: ColumnVisualMeta[];
+  isDoctorWorkspace: boolean;
+  manualHeight: number | undefined;
+  isWrapEnabled: boolean;
+  isRowHighlighted: boolean;
+  isFullRowMode: boolean;
+  anchorCol: number;
+  isEditingRow: boolean;
+  editValueIfEditing: string;
+  selectedColStart: number;
+  selectedColEnd: number;
+  onRowHeaderClick: (gridRowIdx: number, shiftKey: boolean) => void;
+  onRowResizeStart: (gridRowIdx: number, e: React.PointerEvent<HTMLDivElement>) => void;
+  onCellClick: (gridRowIdx: number, colIdx: number, shiftKey: boolean) => void;
+  onCellDoubleClick: (gridRowIdx: number, colIdx: number, detail: number) => void;
+  onEditValueChange: (val: string) => void;
+  onCommitEdit: () => void;
+  setEditInputRef: (el: HTMLInputElement | null) => void;
+  setRowElementRef: (gridRowIdx: number, el: HTMLTableRowElement | null) => void;
+}
+
+const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
+  gridRowIdx,
+  rowCells,
+  totalCols,
+  colMetaList,
+  isDoctorWorkspace,
+  manualHeight,
+  isWrapEnabled,
+  isRowHighlighted,
+  isFullRowMode,
+  anchorCol,
+  isEditingRow,
+  editValueIfEditing,
+  selectedColStart,
+  selectedColEnd,
+  onRowHeaderClick,
+  onRowResizeStart,
+  onCellClick,
+  onCellDoubleClick,
+  onEditValueChange,
+  onCommitEdit,
+  setEditInputRef,
+  setRowElementRef
+}: SpreadsheetDataRowProps) {
+  const excelRowNum = gridRowIdx + 1;
+
+  return (
+    <tr
+      ref={(el) => setRowElementRef(gridRowIdx, el)}
+      style={
+        manualHeight
+          ? { height: `${manualHeight}px` }
+          : !isWrapEnabled
+            ? { height: `${DEFAULT_DATA_ROW_HEIGHT}px` }
+            : undefined
+      }
+    >
+      <th
+        onClick={(e) => onRowHeaderClick(gridRowIdx, e.shiftKey)}
+        className={`w-12 min-w-12 border-r border-b border-slate-300 text-center text-[11px] tabular-nums sticky left-0 z-[15] select-none cursor-pointer relative ${
+          isRowHighlighted && isFullRowMode
+            ? 'bg-slate-700 text-white font-semibold'
+            : isRowHighlighted
+              ? 'bg-slate-200 text-slate-900 font-medium'
+              : 'bg-slate-100 hover:bg-slate-200/70 text-slate-600 font-normal'
+        }`}
+      >
+        <span>{excelRowNum}</span>
+        <div
+          onPointerDown={(e) => onRowResizeStart(gridRowIdx, e)}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          title="Drag to resize row height"
+          className="absolute left-0 right-0 bottom-0 h-2 md:h-1.5 cursor-row-resize touch-none hover:bg-sky-500/70 z-20"
+        />
+      </th>
+
+      {Array.from({ length: totalCols }).map((_, cIdx) => {
+        const isAnchor = anchorCol === cIdx;
+        const isInSel =
+          selectedColStart !== -1 && cIdx >= selectedColStart && cIdx <= selectedColEnd;
+        const isCellEditing = isAnchor && isEditingRow;
+        const cellVal = rowCells ? (rowCells[cIdx] ?? '') : '';
+        const colMeta = colMetaList[cIdx];
+        const category = colMeta?.category ?? 'normal';
+        const alignClass = getAlignmentClass(colMeta?.align ?? 'left');
+        const showRangeTint = isInSel && !(isAnchor && !isFullRowMode && selectedColStart === selectedColEnd);
+        const bgClass = getClinicalCellBgClass(category, showRangeTint, isDoctorWorkspace);
+
+        return (
+          <td
+            key={cIdx}
+            onClick={(e) => onCellClick(gridRowIdx, cIdx, e.shiftKey)}
+            onDoubleClick={(e) => onCellDoubleClick(gridRowIdx, cIdx, e.detail)}
+            className={`min-h-[28px] px-2.5 py-1 border-r border-b border-slate-300 relative text-xs leading-[18px] text-slate-900 font-normal tabular-nums align-top ${alignClass} ${bgClass} ${
+              isAnchor && !isCellEditing
+                ? 'outline-2 outline-slate-900 outline-offset-[-2px] z-10'
+                : ''
+            }`}
+          >
+            {isCellEditing ? (
+              <input
+                ref={setEditInputRef}
+                type="text"
+                value={editValueIfEditing}
+                onChange={(e) => onEditValueChange(e.target.value)}
+                onBlur={onCommitEdit}
+                className={`absolute inset-0 w-full h-full px-2.5 text-xs bg-white text-slate-900 border-2 border-slate-900 outline-none z-10 ${alignClass}`}
+              />
+            ) : (
+              <div
+                className={
+                  isWrapEnabled
+                    ? 'whitespace-normal break-words leading-[18px] min-h-[18px]'
+                    : 'truncate whitespace-nowrap leading-[18px] h-[18px]'
+                }
+                style={
+                  manualHeight
+                    ? { maxHeight: `${Math.max(18, manualHeight - 8)}px`, overflowY: 'auto' }
+                    : undefined
+                }
+              >
+                {cellVal !== undefined && cellVal !== null ? String(cellVal) : ''}
+              </div>
+            )}
+          </td>
+        );
+      })}
+    </tr>
+  );
+});
 
 export function ExcelSpreadsheet({
   workspace,
@@ -86,6 +362,11 @@ export function ExcelSpreadsheet({
     return '';
   }, [defaultSheetName, initialSheets]);
 
+  const initialLatestRow = useMemo(
+    () => findLatestRecordGridRow(initialTabName ? initialSheets[initialTabName] : undefined),
+    [initialSheets, initialTabName]
+  );
+
   const [activeSheetName, setActiveSheetName] = useState<string>(initialTabName);
   const [sheets, setSheets] = useState<Record<string, SheetState>>(initialSheets);
 
@@ -101,6 +382,37 @@ export function ExcelSpreadsheet({
   const [hasConflict, setHasConflict] = useState<boolean>(false);
   const isSavingRef = useRef<boolean>(false);
 
+  // Selection state (supports cell, range, row(s), column(s), all)
+  const [selection, setSelection] = useState<SelectionState>({
+    mode: 'cell',
+    anchorRow: initialLatestRow,
+    anchorCol: 0,
+    focusRow: initialLatestRow,
+    focusCol: 0
+  });
+  const selectedCell = useMemo(
+    () => ({ row: selection.anchorRow, col: selection.anchorCol }),
+    [selection.anchorRow, selection.anchorCol]
+  );
+
+  // Latest-record scroll positioning generation (only increments on initial data load or sheet open/switch, never on save)
+  const [scrollPositionRequest, setScrollPositionRequest] = useState<{
+    sheetName: string;
+    targetRow: number;
+    nonce: number;
+  }>({
+    sheetName: initialTabName,
+    targetRow: initialLatestRow,
+    nonce: initialTabName ? 1 : 0
+  });
+  const lastExecutedScrollNonceRef = useRef<number>(0);
+
+
+
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [editValue, setEditValue] = useState<string>('');
+  const [isWrapEnabled, setIsWrapEnabled] = useState<boolean>(true);
+
   // Synchronize when initialSheets prop updates from Supabase fetch / reload
   const [prevInitialSheets, setPrevInitialSheets] = useState(initialSheets);
   if (initialSheets !== prevInitialSheets) {
@@ -112,13 +424,32 @@ export function ExcelSpreadsheet({
     setSaveMessage('');
     setSaveError(null);
     setHasConflict(false);
-    if (!activeSheetName || !initialSheets[activeSheetName]) {
-      const keys = Object.keys(initialSheets);
-      if (defaultSheetName && initialSheets[defaultSheetName]) {
-        setActiveSheetName(defaultSheetName);
-      } else {
-        setActiveSheetName(keys[0] || '');
-      }
+    setIsEditing(false);
+
+    const keys = Object.keys(initialSheets);
+    let nextActive = activeSheetName;
+    if (!nextActive || !initialSheets[nextActive]) {
+      nextActive =
+        defaultSheetName && initialSheets[defaultSheetName]
+          ? defaultSheetName
+          : keys[0] || '';
+      setActiveSheetName(nextActive);
+    }
+
+    const latestRow = findLatestRecordGridRow(nextActive ? initialSheets[nextActive] : undefined);
+    setSelection({
+      mode: 'cell',
+      anchorRow: latestRow,
+      anchorCol: 0,
+      focusRow: latestRow,
+      focusCol: 0
+    });
+    if (nextActive) {
+      setScrollPositionRequest((prev) => ({
+        sheetName: nextActive,
+        targetRow: latestRow,
+        nonce: prev.nonce + 1
+      }));
     }
   }
 
@@ -133,46 +464,49 @@ export function ExcelSpreadsheet({
   const hasUnsavedChanges =
     Object.keys(dirtyCells).length > 0 || Object.keys(dirtyHeaders).length > 0;
 
-  // Notify parent of unsaved changes status
   useEffect(() => {
     onUnsavedStatusChange(hasUnsavedChanges);
   }, [hasUnsavedChanges, onUnsavedStatusChange]);
 
-  // Active & Editing cell coordinates: row 0 = Header (Row 1), row >= 1 = Data rows (Row 2..N)
-  const [selectedCell, setSelectedCell] = useState<{ row: number; col: number }>({ row: 1, col: 0 });
-  const [isEditing, setIsEditing] = useState<boolean>(false);
-  const [editValue, setEditValue] = useState<string>('');
+  // Per-sheet column widths & manual row heights (kept cleanly in React state, never interfering with saves)
+  const [colWidthsBySheet, setColWidthsBySheet] = useState<Record<string, Record<number, number>>>({});
+  const [rowHeightsBySheet, setRowHeightsBySheet] = useState<Record<string, Record<number, number>>>({});
+  const justResizedRef = useRef<boolean>(false);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
 
-  // Column widths state
-  const [columnWidths, setColumnWidths] = useState<Record<number, number>>({
-    0: 105,
-    1: 120,
-    2: 130,
-    3: 130,
-    4: 190,
-    5: 110,
-    6: 120,
-    7: 95,
-    8: 85,
-    9: 100,
-    10: 95,
-    11: 100,
-    12: 90,
-    13: 100,
-    14: 110,
-    15: 110
-  });
+  useEffect(() => {
+    return () => {
+      if (resizeCleanupRef.current) {
+        resizeCleanupRef.current();
+      }
+    };
+  }, []);
 
-  const resizingColRef = useRef<{ col: number; startX: number; startWidth: number } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const gridContainerRef = useRef<HTMLDivElement>(null);
-  const editInputRef = useRef<HTMLInputElement>(null);
+  const tableRef = useRef<HTMLTableElement>(null);
+  const theadRef = useRef<HTMLTableSectionElement>(null);
+  const tbodyRef = useRef<HTMLTableSectionElement>(null);
+  const editInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Add sheet modal state
+  // Direct DOM refs for fast rAF drag resizing without per-frame React re-renders
+  const colElementsRef = useRef<Record<number, HTMLTableColElement | null>>({});
+  const headerLetterThRefs = useRef<Record<number, HTMLTableCellElement | null>>({});
+  const headerTitleTdRefs = useRef<Record<number, HTMLTableCellElement | null>>({});
+  const rowElementsRef = useRef<Record<number, HTMLTableRowElement | null>>({});
+  const headerRowThRef = useRef<HTMLTableCellElement | null>(null);
+
+  // Add sheet modal & bulk delete confirmation state
   const [isAddSheetModalOpen, setIsAddSheetModalOpen] = useState(false);
   const [newSheetNameInput, setNewSheetNameInput] = useState('');
   const [addSheetError, setAddSheetError] = useState<string | null>(null);
   const [isCreatingSheet, setIsCreatingSheet] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
+  const [pendingBulkClear, setPendingBulkClear] = useState<{
+    updates: Array<{ row: number; col: number; value: string | number }>;
+    populatedCount: number;
+    includesHeader: boolean;
+  } | null>(null);
 
   const currentSheet = useMemo(() => {
     return (
@@ -191,6 +525,197 @@ export function ExcelSpreadsheet({
   const totalCols = Math.max(currentSheet.headers.length, maxRowCols, 26);
   const displayRowsCount = Math.max(currentSheet.rows.length + 30, 60);
 
+  const isDoctorWorkspace = workspace === 'doctor';
+
+  // Header-driven clinical classification, width, and alignment per column
+  const colMetaList: ColumnVisualMeta[] = useMemo(() => {
+    const list: ColumnVisualMeta[] = [];
+    for (let c = 0; c < totalCols; c++) {
+      list.push(
+        getColumnVisualMeta(workspace, activeSheetName, currentSheet.headers[c] ?? '', c)
+      );
+    }
+    return list;
+  }, [workspace, activeSheetName, currentSheet.headers, totalCols]);
+
+  const activeDimKey = currentSheet.id || activeSheetName || '__default__';
+  const currentColWidths = colWidthsBySheet[activeDimKey];
+  const currentRowHeights = rowHeightsBySheet[activeDimKey];
+
+  const getColWidth = useCallback(
+    (colIndex: number): number => {
+      return (
+        currentColWidths?.[colIndex] ??
+        colMetaList[colIndex]?.defaultWidth ??
+        DEFAULT_COL_WIDTH
+      );
+    },
+    [currentColWidths, colMetaList]
+  );
+
+  const getManualRowHeight = useCallback(
+    (gridRowIdx: number): number | undefined => {
+      return currentRowHeights?.[gridRowIdx];
+    },
+    [currentRowHeights]
+  );
+
+  const totalTableWidth = useMemo(() => {
+    let sum = ROW_HEADER_COL_WIDTH;
+    for (let c = 0; c < totalCols; c++) {
+      sum += getColWidth(c);
+    }
+    return sum;
+  }, [totalCols, getColWidth]);
+
+  // Normalized selection bounds for highlighting, copy, and clear
+  const selectionBounds = useMemo(() => {
+    if (selection.mode === 'all') {
+      return {
+        rMin: 0,
+        rMax: displayRowsCount - 1,
+        cMin: 0,
+        cMax: totalCols - 1
+      };
+    }
+    if (selection.mode === 'row') {
+      return {
+        rMin: Math.min(selection.anchorRow, selection.focusRow),
+        rMax: Math.max(selection.anchorRow, selection.focusRow),
+        cMin: 0,
+        cMax: totalCols - 1
+      };
+    }
+    if (selection.mode === 'col') {
+      return {
+        rMin: 0,
+        rMax: displayRowsCount - 1,
+        cMin: Math.min(selection.anchorCol, selection.focusCol),
+        cMax: Math.max(selection.anchorCol, selection.focusCol)
+      };
+    }
+    return {
+      rMin: Math.min(selection.anchorRow, selection.focusRow),
+      rMax: Math.max(selection.anchorRow, selection.focusRow),
+      cMin: Math.min(selection.anchorCol, selection.focusCol),
+      cMax: Math.max(selection.anchorCol, selection.focusCol)
+    };
+  }, [selection, displayRowsCount, totalCols]);
+
+  const isCellInSelection = useCallback(
+    (r: number, c: number): boolean => {
+      return (
+        r >= selectionBounds.rMin &&
+        r <= selectionBounds.rMax &&
+        c >= selectionBounds.cMin &&
+        c <= selectionBounds.cMax
+      );
+    },
+    [selectionBounds]
+  );
+
+  const isRowHeaderHighlighted = useCallback(
+    (r: number): boolean => {
+      return r >= selectionBounds.rMin && r <= selectionBounds.rMax;
+    },
+    [selectionBounds]
+  );
+
+  const isColHeaderHighlighted = useCallback(
+    (c: number): boolean => {
+      return c >= selectionBounds.cMin && c <= selectionBounds.cMax;
+    },
+    [selectionBounds]
+  );
+
+  const selectionAddressLabel = useMemo(() => {
+    if (selection.mode === 'all') return 'ALL';
+    if (selection.mode === 'row') {
+      return selectionBounds.rMin === selectionBounds.rMax
+        ? `R${selectionBounds.rMin + 1}`
+        : `R${selectionBounds.rMin + 1}:${selectionBounds.rMax + 1}`;
+    }
+    if (selection.mode === 'col') {
+      return selectionBounds.cMin === selectionBounds.cMax
+        ? `C:${getColumnLetter(selectionBounds.cMin)}`
+        : `${getColumnLetter(selectionBounds.cMin)}:${getColumnLetter(selectionBounds.cMax)}`;
+    }
+    if (selection.mode === 'range') {
+      return `${getColumnLetter(selectionBounds.cMin)}${selectionBounds.rMin + 1}:${getColumnLetter(
+        selectionBounds.cMax
+      )}${selectionBounds.rMax + 1}`;
+    }
+    return `${getColumnLetter(selection.anchorCol)}${selection.anchorRow + 1}`;
+  }, [selection, selectionBounds]);
+
+  // Auto-position scroll viewport to the latest record when a worksheet opens or becomes visible
+  const isActiveWorkspace = workspace === activeWorkspace;
+  useEffect(() => {
+    if (!isActiveWorkspace || isLoading) return;
+    if (scrollPositionRequest.nonce === 0) return;
+    if (scrollPositionRequest.sheetName !== activeSheetName) return;
+    if (lastExecutedScrollNonceRef.current === scrollPositionRequest.nonce) return;
+
+    const container = gridContainerRef.current;
+    if (!container || container.clientHeight === 0) return;
+
+    lastExecutedScrollNonceRef.current = scrollPositionRequest.nonce;
+    const targetRow = scrollPositionRequest.targetRow;
+
+    const rafId = window.requestAnimationFrame(() => {
+      const el = gridContainerRef.current;
+      if (!el || el.clientHeight === 0) return;
+
+      const theadHeight = theadRef.current?.offsetHeight ?? 58;
+      if (targetRow <= 1) {
+        el.scrollTop = 0;
+        el.scrollLeft = 0;
+        return;
+      }
+
+      const tbodyEl = tbodyRef.current;
+      const targetTr = tbodyEl?.children[targetRow - 1] as HTMLElement | undefined;
+      const viewportDataHeight = Math.max(120, el.clientHeight - theadHeight);
+
+      if (targetTr) {
+        const rowTopInTbody = Math.max(0, targetTr.offsetTop - theadHeight);
+        el.scrollTop = Math.max(0, rowTopInTbody - Math.floor(viewportDataHeight * 0.45));
+      } else {
+        const estimatedY = (targetRow - 1) * DEFAULT_DATA_ROW_HEIGHT;
+        el.scrollTop = Math.max(0, estimatedY - Math.floor(viewportDataHeight * 0.45));
+      }
+      el.scrollLeft = 0;
+    });
+
+    return () => window.cancelAnimationFrame(rafId);
+  }, [isActiveWorkspace, isLoading, activeSheetName, scrollPositionRequest]);
+
+  // Keep keyboard-selected row visible below sticky headers when navigating with Arrow/Tab/Enter
+  const ensureRowVisible = useCallback((targetGridRow: number) => {
+    const container = gridContainerRef.current;
+    if (!container) return;
+    const theadHeight = theadRef.current?.offsetHeight ?? 58;
+
+    if (targetGridRow <= 0) {
+      container.scrollTop = 0;
+      return;
+    }
+
+    const targetTr = tbodyRef.current?.children[targetGridRow - 1] as HTMLElement | undefined;
+    if (!targetTr) return;
+
+    const rowTop = targetTr.offsetTop;
+    const rowBottom = rowTop + targetTr.offsetHeight;
+    const visibleTop = container.scrollTop + theadHeight;
+    const visibleBottom = container.scrollTop + container.clientHeight;
+
+    if (rowTop < visibleTop) {
+      container.scrollTop = Math.max(0, rowTop - theadHeight);
+    } else if (rowBottom > visibleBottom) {
+      container.scrollTop = rowBottom - container.clientHeight;
+    }
+  }, []);
+
   // Retrieve cell value by grid coordinates: row 0 is Row 1 (headers), row 1+ is Row 2..N
   const getCellValue = useCallback(
     (r: number, c: number): string | number => {
@@ -207,113 +732,119 @@ export function ExcelSpreadsheet({
     [currentSheet]
   );
 
-  // Update cell value & record targeted dirty edit with baseline optimistic concurrency version
-  const setCellValue = useCallback(
-    (r: number, c: number, value: string | number) => {
+  // Batch-safe cell updater preserving optimistic concurrency baselines
+  const applyCellUpdates = useCallback(
+    (updates: Array<{ row: number; col: number; value: string | number }>) => {
       const targetSheet = sheets[activeSheetName];
-      if (!targetSheet || !targetSheet.id) {
-        return;
-      }
-
-      const prevValue =
-        r === 0
-          ? (targetSheet.headers[c] ?? '')
-          : (targetSheet.rows[r - 1]?.[c] ?? '');
-
-      if (prevValue === value) {
+      if (!targetSheet || !targetSheet.id || updates.length === 0) {
         return;
       }
 
       const sheetId = targetSheet.id;
+      const nextDirtyHeaders = { ...dirtyHeadersRef.current };
+      const nextDirtyCells = { ...dirtyCellsRef.current };
+      let headersChanged = false;
+      let rowsChanged = false;
 
-      if (r === 0) {
-        const headerKey = `${sheetId}:${c}`;
-        const existingDirtyHeader = dirtyHeadersRef.current[headerKey];
-        const expectedHeaderVersion =
-          existingDirtyHeader?.expectedHeaderVersion ?? targetSheet.headerVersion ?? 1;
+      const updatedHeaders = [...targetSheet.headers];
+      const updatedRows = [...targetSheet.rows];
 
-        const nextDirtyHeader: DirtyHeaderEdit = {
-          sheetId,
-          sheetName: activeSheetName,
-          colIndex: c,
-          newHeader: String(value),
-          expectedHeaderVersion
-        };
-        dirtyHeadersRef.current = {
-          ...dirtyHeadersRef.current,
-          [headerKey]: nextDirtyHeader
-        };
-        setDirtyHeaders(dirtyHeadersRef.current);
+      for (const { row: r, col: c, value } of updates) {
+        if (r < 0 || c < 0 || c >= MAX_COLS_LIMIT) continue;
 
-        setSheets((prev) => {
-          const sheet = prev[activeSheetName];
-          if (!sheet) return prev;
-          const newHeaders = [...sheet.headers];
-          while (newHeaders.length <= c) newHeaders.push('');
-          newHeaders[c] = String(value);
-          return {
-            ...prev,
-            [activeSheetName]: {
-              ...sheet,
-              headers: newHeaders
-            }
+        const prevValue =
+          r === 0
+            ? (updatedHeaders[c] ?? '')
+            : (updatedRows[r - 1]?.[c] ?? '');
+
+        if (prevValue === value) continue;
+
+        if (r === 0) {
+          headersChanged = true;
+          while (updatedHeaders.length <= c) updatedHeaders.push('');
+          updatedHeaders[c] = String(value);
+
+          const headerKey = `${sheetId}:${c}`;
+          const existingDirtyHeader = nextDirtyHeaders[headerKey];
+          const expectedHeaderVersion =
+            existingDirtyHeader?.expectedHeaderVersion ?? targetSheet.headerVersion ?? 1;
+
+          nextDirtyHeaders[headerKey] = {
+            sheetId,
+            sheetName: activeSheetName,
+            colIndex: c,
+            newHeader: String(value),
+            expectedHeaderVersion
           };
-        });
-      } else {
-        const dataRowIdx = r - 1;
-        const cellKey = `${sheetId}:${dataRowIdx}:${c}`;
-        const existingDirtyCell = dirtyCellsRef.current[cellKey];
-        const baselineVersion =
-          existingDirtyCell?.expectedCellVersion ??
-          targetSheet.cellVersions?.[dataRowIdx]?.[c] ??
-          0;
-
-        const nextDirtyCell: DirtyCellEdit = {
-          sheetId,
-          sheetName: activeSheetName,
-          rowIndex: dataRowIdx,
-          colIndex: c,
-          value,
-          expectedCellVersion: baselineVersion
-        };
-        dirtyCellsRef.current = {
-          ...dirtyCellsRef.current,
-          [cellKey]: nextDirtyCell
-        };
-        setDirtyCells(dirtyCellsRef.current);
-
-        setSheets((prev) => {
-          const sheet = prev[activeSheetName];
-          if (!sheet) return prev;
-
-          const newRows = [...sheet.rows];
-          while (newRows.length <= dataRowIdx) {
-            newRows.push(new Array(totalCols).fill(''));
+        } else {
+          rowsChanged = true;
+          const dataRowIdx = r - 1;
+          while (updatedRows.length <= dataRowIdx) {
+            updatedRows.push(new Array(totalCols).fill(''));
           }
-
-          const updatedRow = [...(newRows[dataRowIdx] || [])];
-          while (updatedRow.length <= c) {
-            updatedRow.push('');
+          const rowCopy = [...(updatedRows[dataRowIdx] || [])];
+          while (rowCopy.length <= c) {
+            rowCopy.push('');
           }
+          rowCopy[c] = value;
+          updatedRows[dataRowIdx] = rowCopy;
 
-          updatedRow[c] = value;
-          newRows[dataRowIdx] = updatedRow;
+          const cellKey = `${sheetId}:${dataRowIdx}:${c}`;
+          const existingDirtyCell = nextDirtyCells[cellKey];
+          const baselineVersion =
+            existingDirtyCell?.expectedCellVersion ??
+            targetSheet.cellVersions?.[dataRowIdx]?.[c] ??
+            0;
 
-          return {
-            ...prev,
-            [activeSheetName]: {
-              ...sheet,
-              rows: newRows
-            }
+          nextDirtyCells[cellKey] = {
+            sheetId,
+            sheetName: activeSheetName,
+            rowIndex: dataRowIdx,
+            colIndex: c,
+            value,
+            expectedCellVersion: baselineVersion
           };
-        });
+        }
       }
+
+      if (!headersChanged && !rowsChanged) {
+        return;
+      }
+
+      if (headersChanged) {
+        dirtyHeadersRef.current = nextDirtyHeaders;
+        setDirtyHeaders(nextDirtyHeaders);
+      }
+      if (rowsChanged) {
+        dirtyCellsRef.current = nextDirtyCells;
+        setDirtyCells(nextDirtyCells);
+      }
+
+      setSheets((prev) => {
+        const sheet = prev[activeSheetName];
+        if (!sheet) return prev;
+        return {
+          ...prev,
+          [activeSheetName]: {
+            ...sheet,
+            ...(headersChanged ? { headers: updatedHeaders } : {}),
+            ...(rowsChanged ? { rows: updatedRows } : {})
+          }
+        };
+      });
 
       setHasConflict(false);
       setSaveError(null);
       setSaveStatus('idle');
     },
     [activeSheetName, sheets, totalCols]
+  );
+
+  const setCellValue = useCallback(
+    (r: number, c: number, value: string | number) => {
+      applyCellUpdates([{ row: r, col: c, value }]);
+    },
+    [applyCellUpdates]
   );
 
   useEffect(() => {
@@ -323,35 +854,147 @@ export function ExcelSpreadsheet({
   }, [isEditing]);
 
   // Commit current edit, preserving original scalar type if text unchanged
-  const commitEdit = (moveToNextRow: boolean = false, moveToNextCol: boolean = false) => {
-    if (!isEditing) return;
-    const prevVal = getCellValue(selectedCell.row, selectedCell.col);
-    if (String(prevVal ?? '') !== editValue) {
-      setCellValue(selectedCell.row, selectedCell.col, editValue);
-    }
-    setIsEditing(false);
+  const commitEdit = useCallback(
+    (moveToNextRow: boolean = false, moveToNextCol: boolean = false) => {
+      if (!isEditing) return;
+      const prevVal = getCellValue(selectedCell.row, selectedCell.col);
+      if (String(prevVal ?? '') !== editValue) {
+        setCellValue(selectedCell.row, selectedCell.col, editValue);
+      }
+      setIsEditing(false);
 
-    if (moveToNextRow) {
-      setSelectedCell((prev) => ({
-        ...prev,
-        row: Math.min(displayRowsCount - 1, prev.row + 1)
-      }));
-    } else if (moveToNextCol) {
-      setSelectedCell((prev) => ({
-        ...prev,
-        col: Math.min(totalCols - 1, prev.col + 1)
-      }));
+      if (moveToNextRow) {
+        const nextRow = Math.min(displayRowsCount - 1, selectedCell.row + 1);
+        setSelection({
+          mode: 'cell',
+          anchorRow: nextRow,
+          anchorCol: selectedCell.col,
+          focusRow: nextRow,
+          focusCol: selectedCell.col
+        });
+        ensureRowVisible(nextRow);
+      } else if (moveToNextCol) {
+        const nextCol = Math.min(totalCols - 1, selectedCell.col + 1);
+        setSelection({
+          mode: 'cell',
+          anchorRow: selectedCell.row,
+          anchorCol: nextCol,
+          focusRow: selectedCell.row,
+          focusCol: nextCol
+        });
+      }
+    },
+    [
+      isEditing,
+      getCellValue,
+      selectedCell.row,
+      selectedCell.col,
+      editValue,
+      setCellValue,
+      displayRowsCount,
+      ensureRowVisible,
+      totalCols
+    ]
+  );
+
+  const cancelEdit = useCallback(() => {
+    setIsEditing(false);
+  }, []);
+
+  // Latest-state refs so memoized row callbacks remain strictly stable across renders
+  const isEditingRef = useRef(isEditing);
+  const selectedCellRef = useRef(selectedCell);
+  const selectionModeRef = useRef(selection.mode);
+  const totalColsRef = useRef(totalCols);
+  const displayRowsCountRef = useRef(displayRowsCount);
+  const activeDimKeyRef = useRef(activeDimKey);
+  const totalTableWidthRef = useRef(totalTableWidth);
+  const commitEditRef = useRef(commitEdit);
+  const getCellValueRef = useRef(getCellValue);
+  const getColWidthRef = useRef(getColWidth);
+  const getManualRowHeightRef = useRef(getManualRowHeight);
+
+  useEffect(() => {
+    isEditingRef.current = isEditing;
+    selectedCellRef.current = selectedCell;
+    selectionModeRef.current = selection.mode;
+    totalColsRef.current = totalCols;
+    displayRowsCountRef.current = displayRowsCount;
+    activeDimKeyRef.current = activeDimKey;
+    totalTableWidthRef.current = totalTableWidth;
+    commitEditRef.current = commitEdit;
+    getCellValueRef.current = getCellValue;
+    getColWidthRef.current = getColWidth;
+    getManualRowHeightRef.current = getManualRowHeight;
+  });
+
+  // Clear selected cells with clinical safeguard confirmation for bulk/row/col/all deletions
+  const handleDeleteSelection = () => {
+    if (selection.mode === 'cell') {
+      const cur = getCellValue(selectedCell.row, selectedCell.col);
+      if (isNonEmptyCell(cur)) {
+        setCellValue(selectedCell.row, selectedCell.col, '');
+      }
+      return;
     }
+
+    const updates: Array<{ row: number; col: number; value: string | number }> = [];
+    let populatedCount = 0;
+    let includesHeader = false;
+
+    const maxEffectiveRow =
+      selection.mode === 'col' || selection.mode === 'all'
+        ? Math.min(selectionBounds.rMax, Math.max(currentSheet.rows.length, 0))
+        : selectionBounds.rMax;
+    const maxEffectiveCol =
+      selection.mode === 'row' || selection.mode === 'all'
+        ? Math.min(selectionBounds.cMax, Math.max(currentSheet.headers.length - 1, maxRowCols - 1, 0))
+        : selectionBounds.cMax;
+
+    for (let r = selectionBounds.rMin; r <= maxEffectiveRow; r++) {
+      for (let c = selectionBounds.cMin; c <= maxEffectiveCol; c++) {
+        const val = getCellValue(r, c);
+        if (isNonEmptyCell(val)) {
+          populatedCount++;
+          if (r === 0) includesHeader = true;
+          updates.push({ row: r, col: c, value: '' });
+        }
+      }
+    }
+
+    if (updates.length === 0) return;
+
+    if (
+      selection.mode === 'all' ||
+      selection.mode === 'col' ||
+      selection.mode === 'row' ||
+      populatedCount > 1 ||
+      includesHeader
+    ) {
+      setPendingBulkClear({ updates, populatedCount, includesHeader });
+      return;
+    }
+
+    applyCellUpdates(updates);
   };
 
-  const cancelEdit = () => {
-    setIsEditing(false);
-  };
-
-  // Keyboard navigation & direct typing (Ctrl+S handled uniformly by active-workspace window listener)
+  // Keyboard navigation, selection extension & direct typing (Ctrl+S handled by active-workspace listener)
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
+      return;
+    }
+
+    // Ctrl+A / Cmd+A selects entire worksheet when not editing
+    if (!isEditing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      setSelection({
+        mode: 'all',
+        anchorRow: 0,
+        anchorCol: 0,
+        focusRow: displayRowsCount - 1,
+        focusCol: totalCols - 1
+      });
       return;
     }
 
@@ -369,43 +1012,49 @@ export function ExcelSpreadsheet({
       return;
     }
 
-    if (e.key === 'ArrowUp') {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
-      setSelectedCell((prev) => ({
-        ...prev,
-        row: Math.max(0, prev.row - 1)
-      }));
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setSelectedCell((prev) => ({
-        ...prev,
-        row: Math.min(displayRowsCount - 1, prev.row + 1)
-      }));
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      setSelectedCell((prev) => ({
-        ...prev,
-        col: Math.max(0, prev.col - 1)
-      }));
-    } else if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      setSelectedCell((prev) => ({
-        ...prev,
-        col: Math.min(totalCols - 1, prev.col + 1)
-      }));
-    } else if (e.key === 'Tab') {
-      e.preventDefault();
+      const dRow = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+      const dCol = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+
       if (e.shiftKey) {
-        setSelectedCell((prev) => ({
-          ...prev,
-          col: Math.max(0, prev.col - 1)
+        const nextFocusRow = Math.max(0, Math.min(displayRowsCount - 1, selection.focusRow + dRow));
+        const nextFocusCol = Math.max(0, Math.min(totalCols - 1, selection.focusCol + dCol));
+        setSelection((prev) => ({
+          mode: nextFocusRow === prev.anchorRow && nextFocusCol === prev.anchorCol ? 'cell' : 'range',
+          anchorRow: prev.anchorRow,
+          anchorCol: prev.anchorCol,
+          focusRow: nextFocusRow,
+          focusCol: nextFocusCol
         }));
+        ensureRowVisible(nextFocusRow);
       } else {
-        setSelectedCell((prev) => ({
-          ...prev,
-          col: Math.min(totalCols - 1, prev.col + 1)
-        }));
+        const nextRow = Math.max(0, Math.min(displayRowsCount - 1, selectedCell.row + dRow));
+        const nextCol = Math.max(0, Math.min(totalCols - 1, selectedCell.col + dCol));
+        setSelection({
+          mode: 'cell',
+          anchorRow: nextRow,
+          anchorCol: nextCol,
+          focusRow: nextRow,
+          focusCol: nextCol
+        });
+        ensureRowVisible(nextRow);
       }
+      return;
+    }
+
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const nextCol = e.shiftKey
+        ? Math.max(0, selectedCell.col - 1)
+        : Math.min(totalCols - 1, selectedCell.col + 1);
+      setSelection({
+        mode: 'cell',
+        anchorRow: selectedCell.row,
+        anchorCol: nextCol,
+        focusRow: selectedCell.row,
+        focusCol: nextCol
+      });
     } else if (e.key === 'Enter' || e.key === 'F2') {
       e.preventDefault();
       const currentVal = getCellValue(selectedCell.row, selectedCell.col);
@@ -413,51 +1062,226 @@ export function ExcelSpreadsheet({
       setIsEditing(true);
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
-      setCellValue(selectedCell.row, selectedCell.col, '');
+      handleDeleteSelection();
     } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      setSelection({
+        mode: 'cell',
+        anchorRow: selectedCell.row,
+        anchorCol: selectedCell.col,
+        focusRow: selectedCell.row,
+        focusCol: selectedCell.col
+      });
       setEditValue(e.key);
       setIsEditing(true);
     }
   };
 
-  const handleCellClick = (r: number, c: number) => {
-    if (selectedCell.row === r && selectedCell.col === c) {
-      if (!isEditing) {
-        const val = getCellValue(r, c);
-        setEditValue(String(val ?? ''));
-        setIsEditing(true);
-      }
-    } else {
-      if (isEditing) {
-        commitEdit();
-      }
-      setSelectedCell({ row: r, col: c });
-    }
-  };
+  // Single click selects only — NEVER opens edit mode on hover or single-click
+  const handleCellClick = useCallback((r: number, c: number, shiftKey: boolean) => {
+    if (justResizedRef.current) return;
+    rootRef.current?.focus({ preventScroll: true });
 
-  const handleCellDoubleClick = (r: number, c: number) => {
-    if (isEditing) commitEdit();
-    setSelectedCell({ row: r, col: c });
-    const val = getCellValue(r, c);
+    if (shiftKey) {
+      if (isEditingRef.current) commitEditRef.current(false, false);
+      setSelection((prev) => ({
+        mode: r === prev.anchorRow && c === prev.anchorCol ? 'cell' : 'range',
+        anchorRow: prev.anchorRow,
+        anchorCol: prev.anchorCol,
+        focusRow: r,
+        focusCol: c
+      }));
+      return;
+    }
+
+    if (isEditingRef.current) {
+      if (selectedCellRef.current.row === r && selectedCellRef.current.col === c) {
+        return;
+      }
+      commitEditRef.current(false, false);
+    }
+
+    setSelection({
+      mode: 'cell',
+      anchorRow: r,
+      anchorCol: c,
+      focusRow: r,
+      focusCol: c
+    });
+  }, []);
+
+  // Intentional double-click opens edit mode on the clicked cell
+  const handleCellDoubleClick = useCallback((r: number, c: number, detail: number) => {
+    if (justResizedRef.current || detail < 2) return;
+    rootRef.current?.focus({ preventScroll: true });
+    if (isEditingRef.current) commitEditRef.current(false, false);
+    setSelection({
+      mode: 'cell',
+      anchorRow: r,
+      anchorCol: c,
+      focusRow: r,
+      focusCol: c
+    });
+    const val = getCellValueRef.current(r, c);
     setEditValue(String(val ?? ''));
     setIsEditing(true);
-  };
+  }, []);
 
-  const handleCopy = (e: React.ClipboardEvent) => {
-    if (!isEditing) {
-      const val = getCellValue(selectedCell.row, selectedCell.col);
-      e.clipboardData.setData('text/plain', String(val ?? ''));
-      e.preventDefault();
+  const handleRowHeaderClick = useCallback((r: number, shiftKey: boolean) => {
+    if (justResizedRef.current) return;
+    rootRef.current?.focus({ preventScroll: true });
+    if (isEditingRef.current) commitEditRef.current(false, false);
+
+    const maxColIdx = totalColsRef.current - 1;
+    if (shiftKey && selectionModeRef.current === 'row') {
+      setSelection((prev) => ({
+        mode: 'row',
+        anchorRow: prev.anchorRow,
+        anchorCol: 0,
+        focusRow: r,
+        focusCol: maxColIdx
+      }));
+    } else {
+      setSelection({
+        mode: 'row',
+        anchorRow: r,
+        anchorCol: 0,
+        focusRow: r,
+        focusCol: maxColIdx
+      });
     }
+  }, []);
+
+  const handleColHeaderClick = useCallback((c: number, shiftKey: boolean) => {
+    if (justResizedRef.current) return;
+    rootRef.current?.focus({ preventScroll: true });
+    if (isEditingRef.current) commitEditRef.current(false, false);
+
+    const maxRowIdx = displayRowsCountRef.current - 1;
+    if (shiftKey && selectionModeRef.current === 'col') {
+      setSelection((prev) => ({
+        mode: 'col',
+        anchorRow: 0,
+        anchorCol: prev.anchorCol,
+        focusRow: maxRowIdx,
+        focusCol: c
+      }));
+    } else {
+      setSelection({
+        mode: 'col',
+        anchorRow: 0,
+        anchorCol: c,
+        focusRow: maxRowIdx,
+        focusCol: c
+      });
+    }
+  }, []);
+
+  const handleSelectAllClick = useCallback(() => {
+    rootRef.current?.focus({ preventScroll: true });
+    if (isEditingRef.current) commitEditRef.current(false, false);
+    setSelection({
+      mode: 'all',
+      anchorRow: 0,
+      anchorCol: 0,
+      focusRow: displayRowsCountRef.current - 1,
+      focusCol: totalColsRef.current - 1
+    });
+  }, []);
+
+  const setEditInputRef = useCallback((el: HTMLInputElement | null) => {
+    editInputRef.current = el;
+  }, []);
+
+  const setRowElementRef = useCallback((gridRowIdx: number, el: HTMLTableRowElement | null) => {
+    rowElementsRef.current[gridRowIdx] = el;
+  }, []);
+
+  const handleCommitEditBlur = useCallback(() => {
+    commitEditRef.current(false, false);
+  }, []);
+
+  // Copy selected cell, range, row(s), column(s), or entire worksheet in Excel TSV format
+  const handleCopy = (e: React.ClipboardEvent) => {
+    if (isEditing) return;
+
+    const activeEl = document.activeElement;
+    if (activeEl && activeEl.tagName === 'INPUT') {
+      // Allow normal text copy inside formula bar or modal inputs
+      return;
+    }
+
+    const rStart = selectionBounds.rMin;
+    const cStart = selectionBounds.cMin;
+    const rEnd =
+      selection.mode === 'col' || selection.mode === 'all'
+        ? Math.min(selectionBounds.rMax, Math.max(currentSheet.rows.length, 0))
+        : selectionBounds.rMax;
+    const cEnd =
+      selection.mode === 'row' || selection.mode === 'all'
+        ? Math.min(selectionBounds.cMax, Math.max(currentSheet.headers.length - 1, maxRowCols - 1, 0))
+        : selectionBounds.cMax;
+
+    const lines: string[] = [];
+    for (let r = rStart; r <= rEnd; r++) {
+      const rowCells: string[] = [];
+      for (let c = cStart; c <= cEnd; c++) {
+        const val = getCellValue(r, c);
+        rowCells.push(val !== undefined && val !== null ? String(val) : '');
+      }
+      lines.push(rowCells.join('\t'));
+    }
+
+    e.clipboardData.setData('text/plain', lines.join('\n'));
+    e.preventDefault();
   };
 
+  // Paste compatible TSV/scalar values starting at selection anchor without triggering unintended saves
   const handlePaste = (e: React.ClipboardEvent) => {
-    if (!isEditing) {
-      const text = e.clipboardData.getData('text/plain');
-      if (text) {
-        e.preventDefault();
-        setCellValue(selectedCell.row, selectedCell.col, text.trim());
+    if (isEditing) return;
+
+    const activeEl = document.activeElement;
+    if (activeEl && activeEl.tagName === 'INPUT') {
+      return;
+    }
+
+    const text = e.clipboardData.getData('text/plain');
+    if (!text) return;
+
+    e.preventDefault();
+    const matrix = parseClipboardTsv(text);
+    if (matrix.length === 0) return;
+
+    const updates: Array<{ row: number; col: number; value: string | number }> = [];
+
+    if (matrix.length === 1 && matrix[0].length === 1) {
+      const singleVal = matrix[0][0];
+      if (selection.mode === 'range') {
+        for (let r = selectionBounds.rMin; r <= selectionBounds.rMax; r++) {
+          for (let c = selectionBounds.cMin; c <= selectionBounds.cMax; c++) {
+            updates.push({ row: r, col: c, value: singleVal });
+          }
+        }
+      } else {
+        // For cell, row, col, or all: paste single value only at anchor cell to avoid accidental bulk overwrite
+        updates.push({ row: selectedCell.row, col: selectedCell.col, value: singleVal });
       }
+    } else {
+      const startRow = selectionBounds.rMin;
+      const startCol = selectionBounds.cMin;
+      for (let dr = 0; dr < matrix.length; dr++) {
+        const targetRow = startRow + dr;
+        if (targetRow >= 100000) break;
+        const cols = matrix[dr];
+        for (let dc = 0; dc < cols.length; dc++) {
+          const targetCol = startCol + dc;
+          if (targetCol >= MAX_COLS_LIMIT) break;
+          updates.push({ row: targetRow, col: targetCol, value: cols[dc] });
+        }
+      }
+    }
+
+    if (updates.length > 0) {
+      applyCellUpdates(updates);
     }
   };
 
@@ -540,13 +1364,10 @@ export function ExcelSpreadsheet({
 
           runningHeaderVersion = Number(data.newHeaderVersion ?? runningHeaderVersion + 1);
 
-          // Remove saved key from dirty headers
           const updatedDirtyHeaders = { ...dirtyHeadersRef.current };
           delete updatedDirtyHeaders[key];
           dirtyHeadersRef.current = updatedDirtyHeaders;
-          setDirtyHeaders(updatedDirtyHeaders);
 
-          // Update sheet headerVersion & keep remaining dirty headers aligned
           for (const remKey of Object.keys(dirtyHeadersRef.current)) {
             if (dirtyHeadersRef.current[remKey].sheetId === sheetId) {
               dirtyHeadersRef.current[remKey] = {
@@ -584,7 +1405,6 @@ export function ExcelSpreadsheet({
       }
 
       for (const [sheetId, entries] of cellsBySheet.entries()) {
-        // Chunk into <= 500 edits per RPC call
         for (let offset = 0; offset < entries.length; offset += 500) {
           const chunk = entries.slice(offset, offset + 500);
           const sheetName = chunk[0].edit.sheetName;
@@ -619,6 +1439,7 @@ export function ExcelSpreadsheet({
 
             const newCellVer = Number(data.newCellVersion ?? edit.expectedCellVersion + 1);
             const newRowVer = data.newRowVersion !== undefined ? Number(data.newRowVersion) : undefined;
+            const savedAt = typeof data.updatedAt === 'string' ? data.updatedAt : new Date().toISOString();
 
             const updatedDirtyCells = { ...dirtyCellsRef.current };
             delete updatedDirtyCells[key];
@@ -637,12 +1458,14 @@ export function ExcelSpreadsheet({
               if (newRowVer !== undefined) {
                 nextRowVersions[edit.rowIndex] = newRowVer;
               }
+              const nextRowUpdatedAt = { ...(target.rowUpdatedAt || {}), [edit.rowIndex]: savedAt };
               return {
                 ...prev,
                 [sheetName]: {
                   ...target,
                   cellVersions: nextCellVersions,
-                  rowVersions: nextRowVersions
+                  rowVersions: nextRowVersions,
+                  rowUpdatedAt: nextRowUpdatedAt
                 }
               };
             });
@@ -688,6 +1511,7 @@ export function ExcelSpreadsheet({
                   newRowVersion?: number;
                 }>)
               : [];
+            const savedAt = typeof data.updatedAt === 'string' ? data.updatedAt : new Date().toISOString();
 
             const updatedDirtyCells = { ...dirtyCellsRef.current };
             for (const { key } of chunk) {
@@ -701,6 +1525,7 @@ export function ExcelSpreadsheet({
               if (!target) return prev;
               const nextCellVersions = { ...(target.cellVersions || {}) };
               const nextRowVersions = { ...(target.rowVersions || {}) };
+              const nextRowUpdatedAt = { ...(target.rowUpdatedAt || {}) };
 
               updatedCellsRes.forEach((u, idx) => {
                 const fallbackEdit = chunk[idx]?.edit;
@@ -714,6 +1539,7 @@ export function ExcelSpreadsheet({
                 if (u.newRowVersion !== undefined) {
                   nextRowVersions[rIdx] = Number(u.newRowVersion);
                 }
+                nextRowUpdatedAt[rIdx] = savedAt;
               });
 
               return {
@@ -721,7 +1547,8 @@ export function ExcelSpreadsheet({
                 [sheetName]: {
                   ...target,
                   cellVersions: nextCellVersions,
-                  rowVersions: nextRowVersions
+                  rowVersions: nextRowVersions,
+                  rowUpdatedAt: nextRowUpdatedAt
                 }
               };
             });
@@ -755,7 +1582,6 @@ export function ExcelSpreadsheet({
     handleSaveRef.current = handleSave;
   });
 
-  const isActiveWorkspace = workspace === activeWorkspace;
   useEffect(() => {
     if (!isActiveWorkspace) return;
     const onWindowKeyDown = (e: KeyboardEvent) => {
@@ -781,35 +1607,40 @@ export function ExcelSpreadsheet({
     }
   };
 
-  // Export to Excel (active workspace ONLY)
-  const handleExportToExcel = () => {
+  const [isExporting, setIsExporting] = useState(false);
+
+  // Direct single-click Export button: saves pending changes first if any, then exports workspace
+  const handleDirectExport = async () => {
+    if (isExporting || sheetKeys.length === 0) return;
+    setIsExporting(true);
     try {
-      const wb = XLSX.utils.book_new();
-      const sheetKeys = Object.keys(sheets);
-
-      for (const sheetName of sheetKeys) {
-        const sheet = sheets[sheetName];
-        if (!sheet) continue;
-
-        const nonEmptyRows = sheet.rows.filter(
-          (r) => r && r.some((cell) => cell !== '' && cell !== undefined && cell !== null)
-        );
-
-        const sheetAoa = [sheet.headers, ...nonEmptyRows];
-        const ws = XLSX.utils.aoa_to_sheet(sheetAoa);
-        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      if (hasUnsavedChanges) {
+        await handleSave();
+        if (Object.keys(dirtyCellsRef.current).length > 0 || Object.keys(dirtyHeadersRef.current).length > 0) {
+          throw new Error('Could not save pending edits before export.');
+        }
       }
 
-      const today = new Date().toISOString().slice(0, 10);
-      const filename =
-        workspace === 'doctor'
-          ? `MK_Eye_Center_Doctor_Export_${today}.xlsx`
-          : `MK_Eye_Center_Reception_Export_${today}.xlsx`;
+      const targetSheets: Array<{ name: string; headers: string[]; rows: (string | number)[][] }> = [];
+      for (const name of sheetKeys) {
+        const s = sheets[name];
+        if (!s) continue;
+        const nonEmptyRows = s.rows.filter(
+          (r) => r && r.some((cell) => cell !== '' && cell !== undefined && cell !== null)
+        );
+        targetSheets.push({
+          name,
+          headers: s.headers,
+          rows: nonEmptyRows
+        });
+      }
 
-      XLSX.writeFile(wb, filename);
-    } catch (err) {
-      console.error('Failed to export to Excel:', err);
-      alert('Failed to generate Excel file.');
+      exportSheetsToExcel(workspace, targetSheets, 'Workspace');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Export failed.';
+      alert(`Export failed: ${msg}`);
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -886,7 +1717,8 @@ export function ExcelSpreadsheet({
         headerVersion: 1,
         rows: [],
         rowVersions: {},
-        cellVersions: {}
+        cellVersions: {},
+        rowUpdatedAt: {}
       };
 
       setSheets((prev) => ({
@@ -895,7 +1727,18 @@ export function ExcelSpreadsheet({
       }));
 
       setActiveSheetName(trimmed);
-      setSelectedCell({ row: 1, col: 0 });
+      setSelection({
+        mode: 'cell',
+        anchorRow: 1,
+        anchorCol: 0,
+        focusRow: 1,
+        focusCol: 0
+      });
+      setScrollPositionRequest((prev) => ({
+        sheetName: trimmed,
+        targetRow: 1,
+        nonce: prev.nonce + 1
+      }));
       setIsAddSheetModalOpen(false);
       setNewSheetNameInput('');
     } catch (err: unknown) {
@@ -906,97 +1749,296 @@ export function ExcelSpreadsheet({
     }
   };
 
-  // Column resize mouse drag handlers
-  const handleResizeStart = (colIndex: number, e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const startWidth = columnWidths[colIndex] || 110;
-    resizingColRef.current = { col: colIndex, startX: e.clientX, startWidth };
+  // Column resize via Pointer Events + rAF DOM updates (commits React state once on pointerup)
+  const handleColResizeStart = useCallback(
+    (colIndex: number, e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
 
-    const handleMouseMove = (moveEvent: MouseEvent) => {
-      if (!resizingColRef.current) return;
-      const delta = moveEvent.clientX - resizingColRef.current.startX;
-      const newWidth = Math.max(50, resizingColRef.current.startWidth + delta);
-      setColumnWidths((prev) => ({
-        ...prev,
-        [resizingColRef.current!.col]: newWidth
-      }));
-    };
+      if (resizeCleanupRef.current) {
+        resizeCleanupRef.current();
+      }
 
-    const handleMouseUp = () => {
-      resizingColRef.current = null;
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
+      const targetSheetKey = activeDimKeyRef.current;
+      const targetCol = colIndex;
+      const startX = e.clientX;
+      const startWidth = getColWidthRef.current(colIndex);
+      const startTableWidth = totalTableWidthRef.current;
+      let latestWidth = startWidth;
+      let rafId: number | null = null;
+      let pendingClientX = startX;
 
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-  };
+      const applyDomWidth = (nextWidth: number) => {
+        const colEl = colElementsRef.current[targetCol];
+        if (colEl) {
+          colEl.style.width = `${nextWidth}px`;
+        }
+        const letterTh = headerLetterThRefs.current[targetCol];
+        if (letterTh) {
+          letterTh.style.width = `${nextWidth}px`;
+          letterTh.style.minWidth = `${nextWidth}px`;
+        }
+        const titleTd = headerTitleTdRefs.current[targetCol];
+        if (titleTd) {
+          titleTd.style.width = `${nextWidth}px`;
+          titleTd.style.minWidth = `${nextWidth}px`;
+        }
+        if (tableRef.current) {
+          tableRef.current.style.width = `${startTableWidth - startWidth + nextWidth}px`;
+        }
+      };
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        pendingClientX = moveEvent.clientX;
+        if (rafId === null) {
+          rafId = window.requestAnimationFrame(() => {
+            rafId = null;
+            const delta = pendingClientX - startX;
+            latestWidth = Math.min(
+              MAX_COL_WIDTH,
+              Math.max(MIN_COL_WIDTH, Math.round(startWidth + delta))
+            );
+            applyDomWidth(latestWidth);
+          });
+        }
+      };
+
+      const finishResize = (commitState: boolean) => {
+        if (rafId !== null) {
+          window.cancelAnimationFrame(rafId);
+          rafId = null;
+          const delta = pendingClientX - startX;
+          latestWidth = Math.min(
+            MAX_COL_WIDTH,
+            Math.max(MIN_COL_WIDTH, Math.round(startWidth + delta))
+          );
+          applyDomWidth(latestWidth);
+        }
+
+        justResizedRef.current = true;
+        window.setTimeout(() => {
+          justResizedRef.current = false;
+        }, 80);
+
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerCancel);
+        window.removeEventListener('blur', onWindowBlur);
+        resizeCleanupRef.current = null;
+
+        if (commitState && latestWidth !== startWidth) {
+          setColWidthsBySheet((prev) => ({
+            ...prev,
+            [targetSheetKey]: {
+              ...(prev[targetSheetKey] || {}),
+              [targetCol]: latestWidth
+            }
+          }));
+        }
+      };
+
+      const onPointerUp = () => finishResize(true);
+      const onPointerCancel = () => finishResize(true);
+      const onWindowBlur = () => finishResize(true);
+
+      resizeCleanupRef.current = () => finishResize(false);
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerCancel);
+      window.addEventListener('blur', onWindowBlur);
+    },
+    []
+  );
+
+  // Row height resize via Pointer Events + rAF DOM updates (commits React state once on pointerup)
+  const handleRowResizeStart = useCallback(
+    (gridRowIdx: number, e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+
+      if (resizeCleanupRef.current) {
+        resizeCleanupRef.current();
+      }
+
+      const targetSheetKey = activeDimKeyRef.current;
+      const targetRow = gridRowIdx;
+      const startY = e.clientY;
+      const thEl = e.currentTarget.parentElement;
+      const measuredHeight = thEl ? thEl.getBoundingClientRect().height : 0;
+      const fallbackHeight =
+        targetRow === 0 ? DEFAULT_HEADER_ROW_HEIGHT : DEFAULT_DATA_ROW_HEIGHT;
+      const startHeight =
+        getManualRowHeightRef.current(gridRowIdx) ??
+        (measuredHeight > 0 ? measuredHeight : fallbackHeight);
+      let latestHeight = startHeight;
+      let rafId: number | null = null;
+      let pendingClientY = startY;
+
+      const applyDomHeight = (nextHeight: number) => {
+        if (targetRow === 0) {
+          if (headerRowThRef.current) {
+            headerRowThRef.current.style.height = `${nextHeight}px`;
+          }
+          const trEl = rowElementsRef.current[0];
+          if (trEl) {
+            trEl.style.height = `${nextHeight}px`;
+          }
+        } else {
+          const trEl = rowElementsRef.current[targetRow];
+          if (trEl) {
+            trEl.style.height = `${nextHeight}px`;
+          }
+        }
+      };
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        pendingClientY = moveEvent.clientY;
+        if (rafId === null) {
+          rafId = window.requestAnimationFrame(() => {
+            rafId = null;
+            const delta = pendingClientY - startY;
+            latestHeight = Math.min(
+              MAX_ROW_HEIGHT,
+              Math.max(MIN_ROW_HEIGHT, Math.round(startHeight + delta))
+            );
+            applyDomHeight(latestHeight);
+          });
+        }
+      };
+
+      const finishResize = (commitState: boolean) => {
+        if (rafId !== null) {
+          window.cancelAnimationFrame(rafId);
+          rafId = null;
+          const delta = pendingClientY - startY;
+          latestHeight = Math.min(
+            MAX_ROW_HEIGHT,
+            Math.max(MIN_ROW_HEIGHT, Math.round(startHeight + delta))
+          );
+          applyDomHeight(latestHeight);
+        }
+
+        justResizedRef.current = true;
+        window.setTimeout(() => {
+          justResizedRef.current = false;
+        }, 80);
+
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerCancel);
+        window.removeEventListener('blur', onWindowBlur);
+        resizeCleanupRef.current = null;
+
+        if (commitState && latestHeight !== startHeight) {
+          setRowHeightsBySheet((prev) => ({
+            ...prev,
+            [targetSheetKey]: {
+              ...(prev[targetSheetKey] || {}),
+              [targetRow]: latestHeight
+            }
+          }));
+        }
+      };
+
+      const onPointerUp = () => finishResize(true);
+      const onPointerCancel = () => finishResize(true);
+      const onWindowBlur = () => finishResize(true);
+
+      resizeCleanupRef.current = () => finishResize(false);
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerCancel);
+      window.addEventListener('blur', onWindowBlur);
+    },
+    []
+  );
 
   const sheetKeys = Object.keys(sheets);
   const visibleWorkspaces = allowedWorkspaces && allowedWorkspaces.length > 0 ? allowedWorkspaces : [workspace];
   const staffLabel = user?.name || user?.username || workspace;
 
+  const isFullRowSelectionMode = selection.mode === 'row' || selection.mode === 'all';
+  const isFullColSelectionMode = selection.mode === 'col' || selection.mode === 'all';
+
   return (
     <div
-      className="flex flex-col h-screen w-full bg-white select-none overflow-hidden font-sans text-xs text-slate-800"
+      ref={rootRef}
+      className="flex flex-col h-screen w-full bg-white select-none overflow-hidden font-sans text-xs text-slate-800 outline-none"
       onKeyDown={handleKeyDown}
       onCopy={handleCopy}
       onPaste={handlePaste}
       tabIndex={0}
     >
-      {/* 1. Compact Application Toolbar */}
-      <div className="h-10 px-3 bg-slate-100 border-b border-slate-300 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-2">
+      {/* 1. Application Toolbar / Header */}
+      <div className="min-h-12 py-1.5 md:h-12 md:py-0 px-3 bg-slate-900 text-white border-b border-slate-800 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 shrink-0 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Official MK Eye Center Logo */}
+          <div className="flex items-center bg-white px-2.5 py-1 rounded-lg shadow-xs">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/assets/aistudio/mk_long_logo_a5863dd4.png"
+              alt="MK Eye Center Logo"
+              className="h-6 w-auto object-contain"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+
           <button
             type="button"
             onClick={() => void handleSave()}
             disabled={saveStatus === 'saving' || isLoading || !currentSheet.id}
-            className="px-3 py-1 font-semibold text-white bg-slate-900 hover:bg-slate-800 active:bg-black rounded-xs transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+            className="px-3.5 py-1.5 md:py-1 font-semibold text-white bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-lg transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5 text-xs shadow-xs"
           >
             {saveStatus === 'saving' ? 'Saving...' : 'Save'}
           </button>
 
           <button
             type="button"
-            onClick={handleExportToExcel}
-            disabled={sheetKeys.length === 0}
-            className="px-3 py-1 font-semibold text-slate-800 bg-white hover:bg-slate-50 border border-slate-300 rounded-xs transition disabled:opacity-50 cursor-pointer"
+            onClick={() => void handleDirectExport()}
+            disabled={isExporting || sheetKeys.length === 0}
+            className="px-3.5 py-1.5 md:py-1 font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition disabled:opacity-50 cursor-pointer text-xs"
           >
-            Export to Excel
+            {isExporting ? 'Exporting...' : 'Export'}
           </button>
 
           {user?.role === 'admin' && canAdminImport && onRequestInitialImport && (
             <button
               type="button"
               onClick={onRequestInitialImport}
-              className="px-3 py-1 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-xs transition cursor-pointer"
+              className="px-3 py-1.5 md:py-1 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition cursor-pointer text-xs"
             >
               Import Initial Workbooks
             </button>
           )}
 
           {/* Save & Conflict Status Notice */}
-          <div className="ml-2 flex items-center gap-2 text-[11px]" role="status" aria-live="polite">
-            {isLoading && <span className="text-slate-500">Loading workbook from Supabase...</span>}
+          <div className="sm:ml-1 flex items-center gap-2 text-[11px]" role="status" aria-live="polite">
+            {isLoading && <span className="text-slate-400">Loading workbook from Supabase...</span>}
             {!isLoading && saveStatus === 'saving' && (
-              <span className="text-slate-600 font-medium">Saving changes...</span>
+              <span className="text-slate-300 font-medium">Saving changes...</span>
             )}
             {!isLoading && saveStatus === 'saved' && !hasUnsavedChanges && (
-              <span className="text-emerald-700 font-semibold">{saveMessage || 'Saved changes'}</span>
+              <span className="text-emerald-400 font-semibold">{saveMessage || 'Saved changes'}</span>
             )}
             {!isLoading && hasUnsavedChanges && saveStatus !== 'saving' && (
-              <span className="text-amber-700 font-medium">Unsaved edits</span>
+              <span className="text-amber-400 font-medium">Unsaved edits</span>
             )}
             {!isLoading && saveStatus === 'error' && (
-              <span className="text-red-600 font-medium">{saveError || 'Save failed'}</span>
+              <span
+                title={saveError || 'Save failed'}
+                className="text-red-400 font-medium max-w-[200px] sm:max-w-xs md:max-w-md truncate"
+              >
+                {saveError || 'Save failed'}
+              </span>
             )}
             {!isLoading && hasConflict && onReloadWorkspace && (
               <button
                 type="button"
                 onClick={() => void handleReloadLatest()}
                 disabled={isReloading}
-                className="px-2 py-0.5 bg-red-600 text-white rounded-xs font-medium hover:bg-red-700 cursor-pointer disabled:opacity-50"
+                className="px-2 py-0.5 bg-red-600 text-white rounded-md font-medium hover:bg-red-700 cursor-pointer disabled:opacity-50 text-[11px]"
               >
                 {isReloading ? 'Reloading...' : 'Reload Latest'}
               </button>
@@ -1005,17 +2047,17 @@ export function ExcelSpreadsheet({
         </div>
 
         {/* Center/Right: Role-Authorized Workspace Tabs + Staff Identity + Sign Out */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3 sm:gap-4 ml-auto">
           {visibleWorkspaces.length > 1 ? (
-            <div className="flex items-center bg-slate-200/90 p-0.5 rounded-xs border border-slate-300 text-xs">
+            <div className="flex items-center bg-slate-800 p-1 rounded-lg border border-slate-700 text-xs">
               {visibleWorkspaces.includes('reception') && (
                 <button
                   type="button"
                   onClick={() => onWorkspaceSwitchRequest('reception')}
-                  className={`px-3 py-0.5 font-semibold text-xs rounded-xs transition cursor-pointer ${
+                  className={`px-3.5 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
                     activeWorkspace === 'reception'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-300 hover:text-white'
                   }`}
                 >
                   Reception
@@ -1025,10 +2067,10 @@ export function ExcelSpreadsheet({
                 <button
                   type="button"
                   onClick={() => onWorkspaceSwitchRequest('doctor')}
-                  className={`px-3 py-0.5 font-semibold text-xs rounded-xs transition cursor-pointer ${
+                  className={`px-3.5 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
                     activeWorkspace === 'doctor'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-300 hover:text-white'
                   }`}
                 >
                   Doctor
@@ -1036,19 +2078,19 @@ export function ExcelSpreadsheet({
               )}
             </div>
           ) : (
-            <span className="px-2.5 py-0.5 font-semibold text-xs bg-white text-slate-900 border border-slate-300 rounded-xs">
+            <span className="px-3 py-1 font-semibold text-xs bg-slate-800 text-slate-200 border border-slate-700 rounded-lg">
               {workspace === 'doctor' ? 'Doctor Workspace' : 'Reception Workspace'}
             </span>
           )}
 
-          <div className="flex items-center gap-3 border-l border-slate-300 pl-3">
-            <span className="text-slate-600 font-mono text-[11px]" title={user?.role}>
+          <div className="flex items-center gap-3 border-l border-slate-700 pl-3">
+            <span className="text-slate-300 font-mono text-[11px] max-w-[120px] sm:max-w-none truncate" title={user?.role}>
               {staffLabel}
             </span>
             <button
               type="button"
               onClick={onLogout}
-              className="text-slate-600 hover:text-slate-900 underline text-[11px] cursor-pointer"
+              className="text-slate-300 hover:text-white underline text-xs cursor-pointer whitespace-nowrap font-medium"
             >
               Sign Out
             </button>
@@ -1057,10 +2099,9 @@ export function ExcelSpreadsheet({
       </div>
 
       {/* 2. Formula & Cell Address Bar */}
-      <div className="h-7 px-3 bg-white border-b border-slate-300 flex items-center gap-2 shrink-0 text-xs">
-        <div className="w-14 h-5 px-1 bg-slate-50 border border-slate-300 rounded-xs flex items-center justify-center font-mono font-semibold text-slate-700 text-[11px] select-none shrink-0">
-          {getColumnLetter(selectedCell.col)}
-          {selectedCell.row + 1}
+      <div className="h-8 md:h-7 px-2.5 md:px-3 bg-white border-b border-slate-300 flex items-center gap-2 shrink-0 text-xs">
+        <div className="min-w-16 h-5 px-1.5 bg-slate-50 border border-slate-300 rounded-xs flex items-center justify-center font-mono font-semibold text-slate-700 text-[11px] select-none shrink-0">
+          {selectionAddressLabel}
         </div>
         <span className="text-slate-400 font-serif italic text-xs select-none">fx</span>
         <div className="h-4 w-px bg-slate-300 shrink-0" />
@@ -1088,7 +2129,7 @@ export function ExcelSpreadsheet({
               commitEdit(false, false);
             }
           }}
-          className="flex-1 h-5 px-1.5 bg-transparent text-slate-900 text-xs font-normal outline-none focus:bg-slate-50 rounded-xs disabled:opacity-50"
+          className="flex-1 min-w-0 h-6 md:h-5 px-1.5 bg-transparent text-slate-900 text-xs font-normal outline-none focus:bg-slate-50 rounded-xs disabled:opacity-50"
         />
       </div>
 
@@ -1132,7 +2173,10 @@ export function ExcelSpreadsheet({
       )}
 
       {/* 3. Main Spreadsheet Grid Viewport */}
-      <div ref={gridContainerRef} className="flex-1 overflow-auto bg-white relative outline-none">
+      <div
+        ref={gridContainerRef}
+        className="flex-1 overflow-auto touch-pan-x touch-pan-y bg-white relative outline-none"
+      >
         {!isLoading && sheetKeys.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-500 p-6 text-center">
             <p className="text-sm font-medium text-slate-700">
@@ -1152,67 +2196,161 @@ export function ExcelSpreadsheet({
             )}
           </div>
         ) : (
-          <table className="border-separate border-spacing-0 table-fixed min-w-full text-xs">
-            <thead>
+          <table
+            ref={tableRef}
+            style={{ width: `${totalTableWidth}px` }}
+            className="border-separate border-spacing-0 table-fixed text-xs"
+          >
+            <colgroup>
+              <col style={{ width: `${ROW_HEADER_COL_WIDTH}px` }} />
+              {Array.from({ length: totalCols }).map((_, cIdx) => (
+                <col
+                  key={cIdx}
+                  ref={(el) => {
+                    colElementsRef.current[cIdx] = el;
+                  }}
+                  style={{ width: `${getColWidth(cIdx)}px` }}
+                />
+              ))}
+            </colgroup>
+
+            <thead ref={theadRef}>
               {/* Row 0: Excel Column Letters (sticky top-0, height 24px / h-6) */}
               <tr className="h-6">
-                <th className="w-12 min-w-12 h-6 border-r border-b border-slate-300 bg-slate-200 sticky top-0 left-0 z-50 select-none text-slate-400 font-normal text-center" />
+                <th
+                  onClick={handleSelectAllClick}
+                  title="Select entire worksheet"
+                  className={`w-12 min-w-12 h-6 border-r border-b border-slate-300 sticky top-0 left-0 z-50 select-none text-center cursor-pointer transition-colors ${
+                    selection.mode === 'all'
+                      ? 'bg-slate-700 text-white'
+                      : 'bg-slate-200 hover:bg-slate-300 text-slate-500'
+                  }`}
+                >
+                  <span className="text-[10px] leading-none">◢</span>
+                </th>
 
                 {Array.from({ length: totalCols }).map((_, cIdx) => {
-                  const width = columnWidths[cIdx] || 110;
+                  const width = getColWidth(cIdx);
+                  const isColSelected = isColHeaderHighlighted(cIdx);
                   return (
                     <th
                       key={cIdx}
+                      ref={(el) => {
+                        headerLetterThRefs.current[cIdx] = el;
+                      }}
                       style={{ width: `${width}px`, minWidth: `${width}px` }}
-                      className="h-6 border-r border-b border-slate-300 bg-slate-100 font-medium text-slate-700 text-center select-none sticky top-0 z-30"
+                      onClick={(e) => handleColHeaderClick(cIdx, e.shiftKey)}
+                      className={`h-6 border-r border-b border-slate-300 text-center text-[11px] select-none sticky top-0 z-30 cursor-pointer ${
+                        isColSelected && isFullColSelectionMode
+                          ? 'bg-slate-700 text-white font-semibold'
+                          : isColSelected
+                            ? 'bg-slate-200 text-slate-900 font-semibold'
+                            : 'bg-slate-100 hover:bg-slate-200/70 font-medium text-slate-700'
+                      }`}
                     >
                       <span>{getColumnLetter(cIdx)}</span>
                       <div
-                        onMouseDown={(e) => handleResizeStart(cIdx, e)}
-                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-slate-400 z-20"
+                        onPointerDown={(e) => handleColResizeStart(cIdx, e)}
+                        onClick={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                        title="Drag to resize column width"
+                        className="absolute right-0 top-0 bottom-0 w-2 md:w-1.5 cursor-col-resize touch-none hover:bg-sky-500/70 z-20"
                       />
                     </th>
                   );
                 })}
               </tr>
 
-              {/* Row 1: Sticky Worksheet Column Header Titles (sticky top-6 / 24px, height 28px / h-7) */}
-              <tr className="h-7">
-                <th className="w-12 min-w-12 h-7 border-r border-b-2 border-slate-300 border-b-slate-400 bg-[#d5e0ef] text-slate-800 font-bold text-center sticky top-6 left-0 z-40 select-none shadow-[0_2px_4px_-1px_rgba(15,23,42,0.12)]">
-                  1
+              {/* Row 1: Sticky Worksheet Column Header Titles (sticky top-6 / 24px) */}
+              <tr
+                ref={(el) => {
+                  rowElementsRef.current[0] = el;
+                }}
+                style={getManualRowHeight(0) ? { height: `${getManualRowHeight(0)}px` } : undefined}
+              >
+                <th
+                  ref={headerRowThRef}
+                  onClick={(e) => handleRowHeaderClick(0, e.shiftKey)}
+                  style={getManualRowHeight(0) ? { height: `${getManualRowHeight(0)}px` } : undefined}
+                  className={`w-12 min-w-12 min-h-[34px] border-r border-b-2 border-slate-300 border-b-slate-400 font-bold text-center text-[11px] sticky top-6 left-0 z-40 select-none cursor-pointer shadow-[0_2px_4px_-1px_rgba(15,23,42,0.12)] ${
+                    isRowHeaderHighlighted(0) && isFullRowSelectionMode
+                      ? 'bg-slate-700 text-white'
+                      : isRowHeaderHighlighted(0)
+                        ? 'bg-[#c5d4ea] text-slate-900'
+                        : 'bg-[#d5e0ef] hover:bg-[#c5d4ea] text-slate-800'
+                  }`}
+                >
+                  <span>1</span>
+                  <div
+                    onPointerDown={(e) => handleRowResizeStart(0, e)}
+                    onClick={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    title="Drag to resize header row height"
+                    className="absolute left-0 right-0 bottom-0 h-2 md:h-1.5 cursor-row-resize touch-none hover:bg-sky-500/70 z-20"
+                  />
                 </th>
 
                 {Array.from({ length: totalCols }).map((_, cIdx) => {
-                  const isSelected = selectedCell.row === 0 && selectedCell.col === cIdx;
-                  const isCellEditing = isSelected && isEditing;
+                  const isAnchor = selectedCell.row === 0 && selectedCell.col === cIdx;
+                  const isInSel = isCellInSelection(0, cIdx);
+                  const isCellEditing = isAnchor && isEditing && selection.mode === 'cell';
                   const cellVal = getCellValue(0, cIdx);
-                  const width = columnWidths[cIdx] || 110;
+                  const width = getColWidth(cIdx);
+                  const manualHeight = getManualRowHeight(0);
+                  const colMeta = colMetaList[cIdx];
+                  const category = colMeta?.category ?? 'normal';
+                  const alignClass = getAlignmentClass(colMeta?.align ?? 'left');
+                  const headerBgClass = getClinicalHeaderClasses(
+                    category,
+                    isInSel && !(isAnchor && selection.mode === 'cell'),
+                    isDoctorWorkspace
+                  );
 
                   return (
                     <td
                       key={cIdx}
-                      style={{ width: `${width}px`, minWidth: `${width}px` }}
-                      onClick={() => handleCellClick(0, cIdx)}
-                      onDoubleClick={() => handleCellDoubleClick(0, cIdx)}
-                      className={`h-7 px-2 border-r border-b-2 border-slate-300 border-b-slate-400 bg-[#e3ebf6] font-bold text-[12px] tracking-[0.01em] text-slate-900 truncate sticky top-6 shadow-[0_2px_4px_-1px_rgba(15,23,42,0.1)] ${
-                        isSelected || isCellEditing ? 'z-[25]' : 'z-20'
+                      ref={(el) => {
+                        headerTitleTdRefs.current[cIdx] = el;
+                      }}
+                      style={{
+                        width: `${width}px`,
+                        minWidth: `${width}px`,
+                        ...(manualHeight ? { height: `${manualHeight}px` } : {})
+                      }}
+                      onClick={(e) => handleCellClick(0, cIdx, e.shiftKey)}
+                      onDoubleClick={(e) => handleCellDoubleClick(0, cIdx, e.detail)}
+                      className={`min-h-[34px] px-2.5 py-1.5 border-r border-b-2 border-slate-300 border-b-slate-400 font-bold text-xs leading-[18px] tracking-[0.01em] sticky top-6 shadow-[0_2px_4px_-1px_rgba(15,23,42,0.1)] align-middle ${alignClass} ${headerBgClass} ${
+                        isAnchor || isCellEditing ? 'z-[25]' : 'z-20'
                       } ${
-                        isSelected && !isCellEditing
+                        isAnchor && !isCellEditing
                           ? 'outline-2 outline-slate-900 outline-offset-[-2px]'
                           : ''
                       }`}
                     >
                       {isCellEditing ? (
                         <input
-                          ref={editInputRef}
+                          ref={setEditInputRef}
                           type="text"
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
                           onBlur={() => commitEdit(false, false)}
-                          className="absolute inset-0 w-full h-full px-2 text-xs font-semibold bg-white text-slate-900 border-2 border-slate-900 outline-none z-20"
+                          className={`absolute inset-0 w-full h-full px-2.5 text-xs font-semibold bg-white text-slate-900 border-2 border-slate-900 outline-none z-20 ${alignClass}`}
                         />
                       ) : (
-                        <span>{cellVal !== undefined && cellVal !== null ? String(cellVal) : ''}</span>
+                        <div
+                          className={
+                            isWrapEnabled
+                              ? 'whitespace-normal break-words leading-[18px]'
+                              : 'truncate whitespace-nowrap leading-[18px]'
+                          }
+                          style={
+                            manualHeight
+                              ? { maxHeight: `${Math.max(18, manualHeight - 8)}px`, overflowY: 'auto' }
+                              : undefined
+                          }
+                        >
+                          {cellVal !== undefined && cellVal !== null ? String(cellVal) : ''}
+                        </div>
                       )}
                     </td>
                   );
@@ -1220,49 +2358,42 @@ export function ExcelSpreadsheet({
               </tr>
             </thead>
 
-            <tbody>
+            <tbody ref={tbodyRef}>
               {Array.from({ length: displayRowsCount - 1 }).map((_, offsetIdx) => {
                 const rIdx = offsetIdx + 1;
-                const excelRowNum = rIdx + 1;
+                const manualHeight = getManualRowHeight(rIdx);
+                const isRowHighlighted =
+                  rIdx >= selectionBounds.rMin && rIdx <= selectionBounds.rMax;
+                const anchorColForRow = selectedCell.row === rIdx ? selectedCell.col : -1;
+                const isEditingRow =
+                  isEditing && selection.mode === 'cell' && selectedCell.row === rIdx;
 
                 return (
-                  <tr key={rIdx} className="h-6">
-                    <th className="w-12 min-w-12 h-6 border-r border-b border-slate-300 bg-slate-100 text-slate-600 font-normal text-center sticky left-0 z-[15] select-none">
-                      {excelRowNum}
-                    </th>
-
-                    {Array.from({ length: totalCols }).map((_, cIdx) => {
-                      const isSelected = selectedCell.row === rIdx && selectedCell.col === cIdx;
-                      const isCellEditing = isSelected && isEditing;
-                      const cellVal = getCellValue(rIdx, cIdx);
-
-                      return (
-                        <td
-                          key={cIdx}
-                          onClick={() => handleCellClick(rIdx, cIdx)}
-                          onDoubleClick={() => handleCellDoubleClick(rIdx, cIdx)}
-                          className={`h-6 px-1.5 border-r border-b border-slate-300 truncate relative text-slate-900 bg-white font-normal ${
-                            isSelected && !isCellEditing
-                              ? 'outline-2 outline-slate-900 outline-offset-[-2px] z-10'
-                              : ''
-                          }`}
-                        >
-                          {isCellEditing ? (
-                            <input
-                              ref={editInputRef}
-                              type="text"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onBlur={() => commitEdit(false, false)}
-                              className="absolute inset-0 w-full h-full px-1.5 text-xs bg-white text-slate-900 border-2 border-slate-900 outline-none z-10"
-                            />
-                          ) : (
-                            <span>{cellVal !== undefined && cellVal !== null ? String(cellVal) : ''}</span>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
+                  <SpreadsheetDataRow
+                    key={rIdx}
+                    gridRowIdx={rIdx}
+                    rowCells={currentSheet.rows[rIdx - 1]}
+                    totalCols={totalCols}
+                    colMetaList={colMetaList}
+                    isDoctorWorkspace={isDoctorWorkspace}
+                    manualHeight={manualHeight}
+                    isWrapEnabled={isWrapEnabled}
+                    isRowHighlighted={isRowHighlighted}
+                    isFullRowMode={isFullRowSelectionMode}
+                    anchorCol={anchorColForRow}
+                    isEditingRow={isEditingRow}
+                    editValueIfEditing={isEditingRow ? editValue : ''}
+                    selectedColStart={isRowHighlighted ? selectionBounds.cMin : -1}
+                    selectedColEnd={isRowHighlighted ? selectionBounds.cMax : -1}
+                    onRowHeaderClick={handleRowHeaderClick}
+                    onRowResizeStart={handleRowResizeStart}
+                    onCellClick={handleCellClick}
+                    onCellDoubleClick={handleCellDoubleClick}
+                    onEditValueChange={setEditValue}
+                    onCommitEdit={handleCommitEditBlur}
+                    setEditInputRef={setEditInputRef}
+                    setRowElementRef={setRowElementRef}
+                  />
                 );
               })}
             </tbody>
@@ -1271,7 +2402,7 @@ export function ExcelSpreadsheet({
       </div>
 
       {/* 4. Worksheet Tabs along the bottom with '+' button */}
-      <div className="h-8 bg-slate-200 border-t border-slate-300 flex items-center px-2 gap-1 shrink-0 overflow-x-auto">
+      <div className="h-9 md:h-8 bg-slate-200 border-t border-slate-300 flex items-center px-2 gap-1 shrink-0 overflow-x-auto">
         {sheetKeys.map((name) => {
           const isActive = activeSheetName === name;
           return (
@@ -1281,9 +2412,21 @@ export function ExcelSpreadsheet({
               onClick={() => {
                 if (isEditing) commitEdit();
                 setActiveSheetName(name);
-                setSelectedCell({ row: 1, col: 0 });
+                const latestRow = findLatestRecordGridRow(sheets[name]);
+                setSelection({
+                  mode: 'cell',
+                  anchorRow: latestRow,
+                  anchorCol: 0,
+                  focusRow: latestRow,
+                  focusCol: 0
+                });
+                setScrollPositionRequest((prev) => ({
+                  sheetName: name,
+                  targetRow: latestRow,
+                  nonce: prev.nonce + 1
+                }));
               }}
-              className={`px-3 py-1 text-xs font-medium border-t-2 rounded-t-xs transition cursor-pointer whitespace-nowrap ${
+              className={`px-3 py-1.5 md:py-1 text-xs font-medium border-t-2 rounded-t-xs transition cursor-pointer whitespace-nowrap ${
                 isActive
                   ? 'bg-white border-slate-900 text-slate-900 shadow-xs'
                   : 'bg-slate-200 border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'
@@ -1364,6 +2507,32 @@ export function ExcelSpreadsheet({
           </div>
         </div>
       )}
+
+      {/* 6. Safeguard Confirmation Modal for Bulk / Row / Column Clear */}
+      <ConfirmDialog
+        isOpen={pendingBulkClear !== null}
+        title="Clear Selected Cells"
+        message={
+          pendingBulkClear
+            ? `You are about to clear ${pendingBulkClear.populatedCount} populated cell${
+                pendingBulkClear.populatedCount === 1 ? '' : 's'
+              }${
+                pendingBulkClear.includesHeader ? ' (including worksheet column header titles)' : ''
+              }. Changes will not be saved until you click Save or press Ctrl+S.`
+            : ''
+        }
+        confirmLabel="Clear Cells"
+        confirmVariant="danger"
+        onConfirm={() => {
+          if (pendingBulkClear) {
+            applyCellUpdates(pendingBulkClear.updates);
+            setPendingBulkClear(null);
+          }
+        }}
+        onCancel={() => setPendingBulkClear(null)}
+      />
+
+
     </div>
   );
 }
