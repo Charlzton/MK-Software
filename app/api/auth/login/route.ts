@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { isSupabaseConfigured } from '@/lib/supabase/config';
+import { buildMockStaffUser, setMockSessionCookie } from '@/lib/mockStore';
 import { verifyActiveStaff } from '@/lib/auth';
 import type { UserRole } from '@/lib/types';
 
@@ -41,6 +43,23 @@ export async function POST(req: NextRequest) {
         { authenticated: false, error: 'Invalid role selection.' },
         { status: 400 }
       );
+    }
+
+    if (!isSupabaseConfigured()) {
+      const mockUser = buildMockStaffUser(email, requestedRole);
+      const res = NextResponse.json(
+        {
+          authenticated: true,
+          user: mockUser
+        },
+        {
+          headers: {
+            'Cache-Control': 'private, no-cache, no-store, must-revalidate, max-age=0'
+          }
+        }
+      );
+      setMockSessionCookie(res, req, mockUser);
+      return res;
     }
 
     const supabase = await createClient();

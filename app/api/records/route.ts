@@ -1,5 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { isSupabaseConfigured } from '@/lib/supabase/config';
+import {
+  getMockUserFromRequest,
+  mockCreateWorkspaceSheet,
+  mockDeleteWorkspaceSheet,
+  mockLoadWorkspaceWorkbook,
+  mockPatchWorkspaceCell,
+  mockPatchWorkspaceCellsBatch,
+  mockPatchWorkspaceHeader,
+  mockRenameWorkspaceSheet,
+  mockReorderWorkspaceSheets
+} from '@/lib/mockStore';
 import { verifyActiveStaff } from '@/lib/auth';
 import {
   WorkspaceType,
@@ -45,20 +57,32 @@ function handleErrorResponse(err: unknown) {
 
 export async function GET(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const verification = await verifyActiveStaff(supabase);
+    const useMock = !isSupabaseConfigured();
+    let staffRole: 'admin' | 'doctor' | 'reception';
+    let supabase: Awaited<ReturnType<typeof createClient>> | null = null;
 
-    if (verification.status === 'unauthenticated') {
-      return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
-    }
-    if (verification.status === 'unauthorized') {
-      return NextResponse.json({ error: verification.error }, { status: 403 });
-    }
-    if (verification.status === 'error') {
-      return NextResponse.json({ error: verification.error }, { status: 500 });
+    if (useMock) {
+      const mockUser = getMockUserFromRequest(req);
+      if (!mockUser) {
+        return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
+      }
+      staffRole = mockUser.role;
+    } else {
+      supabase = await createClient();
+      const verification = await verifyActiveStaff(supabase);
+
+      if (verification.status === 'unauthenticated') {
+        return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
+      }
+      if (verification.status === 'unauthorized') {
+        return NextResponse.json({ error: verification.error }, { status: 403 });
+      }
+      if (verification.status === 'error') {
+        return NextResponse.json({ error: verification.error }, { status: 500 });
+      }
+      staffRole = verification.user.role;
     }
 
-    const staff = verification.user;
     const { searchParams } = new URL(req.url);
     const workspaceParam = searchParams.get('workspace');
 
@@ -66,14 +90,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid or missing workspace parameter.' }, { status: 400 });
     }
 
-    if (!canRoleAccessWorkspace(staff.role, workspaceParam)) {
+    if (!canRoleAccessWorkspace(staffRole, workspaceParam)) {
       return NextResponse.json(
-        { error: `Forbidden: ${staff.role} role cannot access the ${workspaceParam} workspace.` },
+        { error: `Forbidden: ${staffRole} role cannot access the ${workspaceParam} workspace.` },
         { status: 403 }
       );
     }
 
-    const workbook = await loadWorkspaceWorkbook(supabase, workspaceParam);
+    const workbook = useMock
+      ? mockLoadWorkspaceWorkbook(workspaceParam)
+      : await loadWorkspaceWorkbook(supabase!, workspaceParam);
     const sheetParam = searchParams.get('sheet');
 
     if (sheetParam) {
@@ -102,20 +128,31 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const verification = await verifyActiveStaff(supabase);
+    const useMock = !isSupabaseConfigured();
+    let staffRole: 'admin' | 'doctor' | 'reception';
+    let supabase: Awaited<ReturnType<typeof createClient>> | null = null;
 
-    if (verification.status === 'unauthenticated') {
-      return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
-    }
-    if (verification.status === 'unauthorized') {
-      return NextResponse.json({ error: verification.error }, { status: 403 });
-    }
-    if (verification.status === 'error') {
-      return NextResponse.json({ error: verification.error }, { status: 500 });
-    }
+    if (useMock) {
+      const mockUser = getMockUserFromRequest(req);
+      if (!mockUser) {
+        return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
+      }
+      staffRole = mockUser.role;
+    } else {
+      supabase = await createClient();
+      const verification = await verifyActiveStaff(supabase);
 
-    const staff = verification.user;
+      if (verification.status === 'unauthenticated') {
+        return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401 });
+      }
+      if (verification.status === 'unauthorized') {
+        return NextResponse.json({ error: verification.error }, { status: 403 });
+      }
+      if (verification.status === 'error') {
+        return NextResponse.json({ error: verification.error }, { status: 500 });
+      }
+      staffRole = verification.user.role;
+    }
 
     let body: Record<string, unknown>;
     try {
@@ -132,9 +169,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!canRoleAccessWorkspace(staff.role, workspaceParam)) {
+    if (!canRoleAccessWorkspace(staffRole, workspaceParam)) {
       return NextResponse.json(
-        { error: `Forbidden: ${staff.role} role cannot modify the ${workspaceParam} workspace.` },
+        { error: `Forbidden: ${staffRole} role cannot modify the ${workspaceParam} workspace.` },
         { status: 403 }
       );
     }
@@ -156,7 +193,9 @@ export async function POST(req: NextRequest) {
         headers = body.headers;
       }
 
-      const created = await createWorkspaceSheetRpc(supabase, workspaceParam, sheetName, headers);
+      const created = useMock
+        ? mockCreateWorkspaceSheet(workspaceParam, sheetName, headers)
+        : await createWorkspaceSheetRpc(supabase!, workspaceParam, sheetName, headers);
       return NextResponse.json({
         success: true,
         workspace: workspaceParam,
@@ -193,12 +232,15 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const result = await patchWorkspaceCellRpc(supabase, workspaceParam, sheetId, {
+      const editPayload = {
         rowIndex,
         colIndex,
         value,
         expectedCellVersion
-      });
+      };
+      const result = useMock
+        ? mockPatchWorkspaceCell(workspaceParam, sheetId, editPayload)
+        : await patchWorkspaceCellRpc(supabase!, workspaceParam, sheetId, editPayload);
 
       return NextResponse.json({
         success: true,
@@ -250,7 +292,9 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      const result = await patchWorkspaceCellsBatchRpc(supabase, workspaceParam, sheetId, validatedEdits);
+      const result = useMock
+        ? mockPatchWorkspaceCellsBatch(workspaceParam, sheetId, validatedEdits)
+        : await patchWorkspaceCellsBatchRpc(supabase!, workspaceParam, sheetId, validatedEdits);
 
       return NextResponse.json({
         success: true,
@@ -282,14 +326,16 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const result = await patchWorkspaceHeaderRpc(
-        supabase,
-        workspaceParam,
-        sheetId,
-        colIndex,
-        newHeader,
-        expectedHeaderVersion
-      );
+      const result = useMock
+        ? mockPatchWorkspaceHeader(workspaceParam, sheetId, colIndex, newHeader, expectedHeaderVersion)
+        : await patchWorkspaceHeaderRpc(
+            supabase!,
+            workspaceParam,
+            sheetId,
+            colIndex,
+            newHeader,
+            expectedHeaderVersion
+          );
 
       return NextResponse.json({
         success: true,
@@ -310,7 +356,9 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'newName is required.' }, { status: 400 });
       }
 
-      const result = await renameWorkspaceSheetRpc(supabase, workspaceParam, sheetId, newName);
+      const result = useMock
+        ? mockRenameWorkspaceSheet(workspaceParam, sheetId, newName)
+        : await renameWorkspaceSheetRpc(supabase!, workspaceParam, sheetId, newName);
       return NextResponse.json({
         success: true,
         workspace: workspaceParam,
@@ -325,7 +373,9 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
       }
 
-      const result = await deleteWorkspaceSheetRpc(supabase, workspaceParam, sheetId);
+      const result = useMock
+        ? mockDeleteWorkspaceSheet(workspaceParam, sheetId)
+        : await deleteWorkspaceSheetRpc(supabase!, workspaceParam, sheetId);
       return NextResponse.json({
         success: true,
         workspace: workspaceParam,
@@ -339,7 +389,9 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'sheetIds must be a non-empty array of strings.' }, { status: 400 });
       }
 
-      const result = await reorderWorkspaceSheetsRpc(supabase, workspaceParam, body.sheetIds as string[]);
+      const result = useMock
+        ? mockReorderWorkspaceSheets(workspaceParam, body.sheetIds as string[])
+        : await reorderWorkspaceSheetsRpc(supabase!, workspaceParam, body.sheetIds as string[]);
       return NextResponse.json({
         success: true,
         workspace: workspaceParam,

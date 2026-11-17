@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { isSupabaseConfigured } from '@/lib/supabase/config';
+import {
+  getMockUserFromRequest,
+  mockImportInitialWorkbooks,
+  mockLoadWorkspaceWorkbook
+} from '@/lib/mockStore';
 import { verifyActiveStaff } from '@/lib/auth';
 import {
   StoreRpcError,
@@ -35,32 +41,51 @@ function countWorkbookRows(sheets: Record<string, { rows: unknown[][] }>): numbe
   return count;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const verification = await verifyActiveStaff(supabase);
+    const useMock = !isSupabaseConfigured();
+    let receptionWb;
+    let doctorWb;
 
-    if (verification.status === 'unauthenticated') {
-      return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401, headers: NO_STORE_HEADERS });
-    }
-    if (verification.status === 'unauthorized') {
-      return NextResponse.json({ error: verification.error }, { status: 403, headers: NO_STORE_HEADERS });
-    }
-    if (verification.status === 'error') {
-      return NextResponse.json({ error: verification.error }, { status: 500, headers: NO_STORE_HEADERS });
-    }
+    if (useMock) {
+      const mockUser = getMockUserFromRequest(req);
+      if (!mockUser) {
+        return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401, headers: NO_STORE_HEADERS });
+      }
+      if (mockUser.role !== 'admin') {
+        return NextResponse.json(
+          { error: 'Forbidden: Only administrator accounts can access initial workbook import.' },
+          { status: 403, headers: NO_STORE_HEADERS }
+        );
+      }
+      receptionWb = mockLoadWorkspaceWorkbook('reception');
+      doctorWb = mockLoadWorkspaceWorkbook('doctor');
+    } else {
+      const supabase = await createClient();
+      const verification = await verifyActiveStaff(supabase);
 
-    if (verification.user.role !== 'admin') {
-      return NextResponse.json(
-        { error: 'Forbidden: Only administrator accounts can access initial workbook import.' },
-        { status: 403, headers: NO_STORE_HEADERS }
-      );
-    }
+      if (verification.status === 'unauthenticated') {
+        return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401, headers: NO_STORE_HEADERS });
+      }
+      if (verification.status === 'unauthorized') {
+        return NextResponse.json({ error: verification.error }, { status: 403, headers: NO_STORE_HEADERS });
+      }
+      if (verification.status === 'error') {
+        return NextResponse.json({ error: verification.error }, { status: 500, headers: NO_STORE_HEADERS });
+      }
 
-    const [receptionWb, doctorWb] = await Promise.all([
-      loadWorkspaceWorkbook(supabase, 'reception'),
-      loadWorkspaceWorkbook(supabase, 'doctor')
-    ]);
+      if (verification.user.role !== 'admin') {
+        return NextResponse.json(
+          { error: 'Forbidden: Only administrator accounts can access initial workbook import.' },
+          { status: 403, headers: NO_STORE_HEADERS }
+        );
+      }
+
+      [receptionWb, doctorWb] = await Promise.all([
+        loadWorkspaceWorkbook(supabase, 'reception'),
+        loadWorkspaceWorkbook(supabase, 'doctor')
+      ]);
+    }
 
     const receptionSheetCount = receptionWb.sheetNames.length;
     const receptionRowCount = countWorkbookRows(receptionWb.sheets);
@@ -90,24 +115,40 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const verification = await verifyActiveStaff(supabase);
+    const useMock = !isSupabaseConfigured();
+    let supabase: Awaited<ReturnType<typeof createClient>> | null = null;
 
-    if (verification.status === 'unauthenticated') {
-      return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401, headers: NO_STORE_HEADERS });
-    }
-    if (verification.status === 'unauthorized') {
-      return NextResponse.json({ error: verification.error }, { status: 403, headers: NO_STORE_HEADERS });
-    }
-    if (verification.status === 'error') {
-      return NextResponse.json({ error: verification.error }, { status: 500, headers: NO_STORE_HEADERS });
-    }
+    if (useMock) {
+      const mockUser = getMockUserFromRequest(req);
+      if (!mockUser) {
+        return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401, headers: NO_STORE_HEADERS });
+      }
+      if (mockUser.role !== 'admin') {
+        return NextResponse.json(
+          { error: 'Forbidden: Only administrator accounts can initiate the initial workbook import.' },
+          { status: 403, headers: NO_STORE_HEADERS }
+        );
+      }
+    } else {
+      supabase = await createClient();
+      const verification = await verifyActiveStaff(supabase);
 
-    if (verification.user.role !== 'admin') {
-      return NextResponse.json(
-        { error: 'Forbidden: Only administrator accounts can initiate the initial workbook import.' },
-        { status: 403, headers: NO_STORE_HEADERS }
-      );
+      if (verification.status === 'unauthenticated') {
+        return NextResponse.json({ error: 'Unauthorized. Please sign in.' }, { status: 401, headers: NO_STORE_HEADERS });
+      }
+      if (verification.status === 'unauthorized') {
+        return NextResponse.json({ error: verification.error }, { status: 403, headers: NO_STORE_HEADERS });
+      }
+      if (verification.status === 'error') {
+        return NextResponse.json({ error: verification.error }, { status: 500, headers: NO_STORE_HEADERS });
+      }
+
+      if (verification.user.role !== 'admin') {
+        return NextResponse.json(
+          { error: 'Forbidden: Only administrator accounts can initiate the initial workbook import.' },
+          { status: 403, headers: NO_STORE_HEADERS }
+        );
+      }
     }
 
     let body: { confirm?: unknown } = {};
@@ -127,9 +168,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (useMock) {
+      const result = mockImportInitialWorkbooks();
+      return NextResponse.json(
+        {
+          success: true,
+          ...result
+        },
+        { headers: NO_STORE_HEADERS }
+      );
+    }
+
     const prepared = prepareInitialWorkbookImport();
     const result = await importInitialWorkbooksRpc(
-      supabase,
+      supabase!,
       prepared.batchKey,
       prepared.payload
     );

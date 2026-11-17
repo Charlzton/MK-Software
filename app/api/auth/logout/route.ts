@@ -1,8 +1,19 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { isSupabaseConfigured } from '@/lib/supabase/config';
+import { clearMockSessionCookie } from '@/lib/mockStore';
 
-export async function POST() {
+export async function POST(req: NextRequest) {
   try {
+    if (!isSupabaseConfigured()) {
+      const res = NextResponse.json({
+        success: true,
+        message: 'Logged out successfully'
+      });
+      clearMockSessionCookie(res, req);
+      return res;
+    }
+
     const supabase = await createClient();
     const { error } = await supabase.auth.signOut();
 

@@ -74,7 +74,7 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
 
         {/* Staff Role Selector: Compact horizontal pill-shaped segmented control with sliding active indicator */}
         {loginMode === 'staff' && (
-          <div className="relative flex items-center bg-slate-900/10 p-1 rounded-full border border-white/70 shadow-inner max-w-xs mx-auto">
+          <div className="relative flex items-center bg-slate-900/10 p-1 rounded-full border border-white/70 shadow-inner w-[212px] mx-auto">
             {/* Sliding active pill indicator */}
             <div
               className={`absolute top-1 bottom-1 w-[calc(50%-4px)] rounded-full bg-blue-600 shadow-sm transition-transform duration-200 ease-out pointer-events-none ${
@@ -85,26 +85,26 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
             <button
               type="button"
               onClick={() => setStaffRole('doctor')}
-              className={`relative z-10 flex-1 py-1.5 px-3 text-xs font-semibold rounded-full flex items-center justify-center gap-1.5 transition-colors duration-150 cursor-pointer ${
+              className={`relative z-10 flex-1 py-1 px-2 text-xs font-semibold rounded-full flex items-center justify-center gap-1 transition-colors duration-150 cursor-pointer ${
                 staffRole === 'doctor'
                   ? 'text-white'
                   : 'text-slate-800 hover:text-slate-950'
               }`}
             >
-              <Stethoscope className="w-3.5 h-3.5" />
+              <Stethoscope className="w-3.5 h-3.5 shrink-0" />
               <span>Doctor</span>
             </button>
 
             <button
               type="button"
               onClick={() => setStaffRole('reception')}
-              className={`relative z-10 flex-1 py-1.5 px-3 text-xs font-semibold rounded-full flex items-center justify-center gap-1.5 transition-colors duration-150 cursor-pointer ${
+              className={`relative z-10 flex-1 py-1 px-2 text-xs font-semibold rounded-full flex items-center justify-center gap-1 transition-colors duration-150 cursor-pointer ${
                 staffRole === 'reception'
                   ? 'text-white'
                   : 'text-slate-800 hover:text-slate-950'
               }`}
             >
-              <Users className="w-3.5 h-3.5" />
+              <Users className="w-3.5 h-3.5 shrink-0" />
               <span>Reception</span>
             </button>
           </div>

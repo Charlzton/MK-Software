@@ -1,13 +1,26 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { isSupabaseConfigured } from '@/lib/supabase/config';
+import { getMockUserFromRequest } from '@/lib/mockStore';
 import { verifyActiveStaff } from '@/lib/auth';
 
 const NO_STORE_HEADERS = {
   'Cache-Control': 'private, no-cache, no-store, must-revalidate, max-age=0'
 };
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    if (!isSupabaseConfigured()) {
+      const mockUser = getMockUserFromRequest(req);
+      if (!mockUser) {
+        return NextResponse.json({ authenticated: false }, { status: 401, headers: NO_STORE_HEADERS });
+      }
+      return NextResponse.json(
+        { authenticated: true, user: mockUser },
+        { headers: NO_STORE_HEADERS }
+      );
+    }
+
     const supabase = await createClient();
     const verification = await verifyActiveStaff(supabase);
 

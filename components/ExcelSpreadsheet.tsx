@@ -1,12 +1,12 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import * as XLSX from 'xlsx';
-import { LogOut } from 'lucide-react';
+import { LogOut, Sun, Moon, Loader2 } from 'lucide-react';
 import { User } from '@/lib/types';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { validateWorksheetName, type WorkspaceSheetState } from '@/lib/store';
 import { exportSheetsToExcel } from '@/lib/excelUtils';
+import type { ThemeMode } from '@/hooks/useTheme';
 import {
   getColumnVisualMeta,
   ClinicalColumnCategory,
@@ -61,7 +61,9 @@ export interface ExcelSpreadsheetProps {
   onWorkspaceSwitchRequest: (targetWorkspace: 'reception' | 'doctor') => void;
   onUnsavedStatusChange: (hasUnsaved: boolean) => void;
   onReloadWorkspace?: () => Promise<void>;
-  onLogout: () => void;
+  onLogout: () => Promise<void> | void;
+  theme?: ThemeMode;
+  onToggleTheme?: () => void;
   isLoading?: boolean;
   loadError?: string | null;
   defaultSheetName?: string;
@@ -107,24 +109,24 @@ function getClinicalHeaderClasses(
   isDoctorWorkspace: boolean
 ): string {
   if (isSelected) {
-    return 'bg-[#cfe0f5] text-slate-900';
+    return 'bg-[#cfe0f5] text-slate-900 dark:bg-sky-900/70 dark:text-sky-100';
   }
   if (!isDoctorWorkspace) {
-    return 'bg-[#e3ebf6] text-slate-900';
+    return 'bg-[#e3ebf6] text-slate-900 dark:bg-slate-800 dark:text-slate-100';
   }
   switch (category) {
     case 'patient_id':
-      return 'bg-sky-50 text-slate-900 border-t-2 border-t-sky-600';
+      return 'bg-sky-50 text-slate-900 border-t-2 border-t-sky-600 dark:bg-sky-950/75 dark:text-sky-100 dark:border-t-sky-400';
     case 'prescription':
-      return 'bg-indigo-50 text-slate-900 border-t-2 border-t-indigo-600';
+      return 'bg-indigo-50 text-slate-900 border-t-2 border-t-indigo-600 dark:bg-indigo-950/75 dark:text-indigo-100 dark:border-t-indigo-400';
     case 'clinical_finding':
-      return 'bg-teal-50 text-slate-900 border-t-2 border-t-teal-600';
+      return 'bg-teal-50 text-slate-900 border-t-2 border-t-teal-600 dark:bg-teal-950/75 dark:text-teal-100 dark:border-t-teal-400';
     case 'medication_treatment':
-      return 'bg-emerald-50 text-slate-900 border-t-2 border-t-emerald-600';
+      return 'bg-emerald-50 text-slate-900 border-t-2 border-t-emerald-600 dark:bg-emerald-950/75 dark:text-emerald-100 dark:border-t-emerald-400';
     case 'surgery':
-      return 'bg-rose-50 text-slate-900 border-t-2 border-t-rose-600';
+      return 'bg-rose-50 text-slate-900 border-t-2 border-t-rose-600 dark:bg-rose-950/75 dark:text-rose-100 dark:border-t-rose-400';
     default:
-      return 'bg-[#e3ebf6] text-slate-900';
+      return 'bg-[#e3ebf6] text-slate-900 dark:bg-slate-800 dark:text-slate-100';
   }
 }
 
@@ -134,24 +136,24 @@ function getClinicalCellBgClass(
   isDoctorWorkspace: boolean
 ): string {
   if (isSelected) {
-    return 'bg-sky-100/80';
+    return 'bg-sky-100/80 dark:bg-sky-900/45';
   }
   if (!isDoctorWorkspace) {
-    return 'bg-white';
+    return 'bg-white dark:bg-slate-950';
   }
   switch (category) {
     case 'patient_id':
-      return 'bg-sky-50/25';
+      return 'bg-sky-50/25 dark:bg-sky-950/30';
     case 'prescription':
-      return 'bg-indigo-50/25';
+      return 'bg-indigo-50/25 dark:bg-indigo-950/30';
     case 'clinical_finding':
-      return 'bg-teal-50/25';
+      return 'bg-teal-50/25 dark:bg-teal-950/30';
     case 'medication_treatment':
-      return 'bg-emerald-50/25';
+      return 'bg-emerald-50/25 dark:bg-emerald-950/30';
     case 'surgery':
-      return 'bg-rose-50/25';
+      return 'bg-rose-50/25 dark:bg-rose-950/30';
     default:
-      return 'bg-white';
+      return 'bg-white dark:bg-slate-950';
   }
 }
 
@@ -265,12 +267,12 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
     >
       <th
         onClick={(e) => onRowHeaderClick(gridRowIdx, e.shiftKey)}
-        className={`w-12 min-w-12 border-r border-b border-slate-300 text-center text-[11px] tabular-nums sticky left-0 z-[15] select-none cursor-pointer relative ${
+        className={`w-12 min-w-12 border-r border-b border-slate-300 dark:border-slate-700 text-center text-[11px] tabular-nums sticky left-0 z-[15] select-none cursor-pointer relative ${
           isRowHighlighted && isFullRowMode
-            ? 'bg-slate-700 text-white font-semibold'
+            ? 'bg-slate-700 text-white font-semibold dark:bg-blue-600 dark:text-white'
             : isRowHighlighted
-              ? 'bg-slate-200 text-slate-900 font-medium'
-              : 'bg-slate-100 hover:bg-slate-200/70 text-slate-600 font-normal'
+              ? 'bg-slate-200 text-slate-900 font-medium dark:bg-slate-800 dark:text-slate-100'
+              : 'bg-slate-100 hover:bg-slate-200/70 text-slate-600 font-normal dark:bg-slate-900 dark:hover:bg-slate-800 dark:text-slate-400'
         }`}
       >
         <span>{excelRowNum}</span>
@@ -300,9 +302,9 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
             key={cIdx}
             onClick={(e) => onCellClick(gridRowIdx, cIdx, e.shiftKey)}
             onDoubleClick={(e) => onCellDoubleClick(gridRowIdx, cIdx, e.detail)}
-            className={`min-h-[28px] px-2.5 py-1 border-r border-b border-slate-300 relative text-xs leading-[18px] text-slate-900 font-normal tabular-nums align-top ${alignClass} ${bgClass} ${
+            className={`min-h-[28px] px-2.5 py-1 border-r border-b border-slate-300 dark:border-slate-800 relative text-xs leading-[18px] text-slate-900 dark:text-slate-100 font-normal tabular-nums align-top ${alignClass} ${bgClass} ${
               isAnchor && !isCellEditing
-                ? 'outline-2 outline-slate-900 outline-offset-[-2px] z-10'
+                ? 'outline-2 outline-slate-900 dark:outline-sky-400 outline-offset-[-2px] z-10'
                 : ''
             }`}
           >
@@ -313,7 +315,7 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
                 value={editValueIfEditing}
                 onChange={(e) => onEditValueChange(e.target.value)}
                 onBlur={onCommitEdit}
-                className={`absolute inset-0 w-full h-full px-2.5 text-xs bg-white text-slate-900 border-2 border-slate-900 outline-none z-10 ${alignClass}`}
+                className={`absolute inset-0 w-full h-full px-2.5 text-xs bg-white text-slate-900 border-2 border-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-sky-400 outline-none z-10 ${alignClass}`}
               />
             ) : (
               <div
@@ -348,6 +350,8 @@ export function ExcelSpreadsheet({
   onUnsavedStatusChange,
   onReloadWorkspace,
   onLogout,
+  theme = 'light',
+  onToggleTheme,
   isLoading = false,
   loadError = null,
   defaultSheetName,
@@ -358,7 +362,12 @@ export function ExcelSpreadsheet({
 }: ExcelSpreadsheetProps) {
   const initialTabName = useMemo(() => {
     if (defaultSheetName && initialSheets[defaultSheetName]) return defaultSheetName;
-    const keys = Object.keys(initialSheets);
+    const keys = Object.keys(initialSheets).sort((a, b) => {
+      const orderA = initialSheets[a]?.tabOrder ?? Number.MAX_SAFE_INTEGER;
+      const orderB = initialSheets[b]?.tabOrder ?? Number.MAX_SAFE_INTEGER;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.localeCompare(b);
+    });
     if (keys.length > 0) return keys[0];
     return '';
   }, [defaultSheetName, initialSheets]);
@@ -427,7 +436,12 @@ export function ExcelSpreadsheet({
     setHasConflict(false);
     setIsEditing(false);
 
-    const keys = Object.keys(initialSheets);
+    const keys = Object.keys(initialSheets).sort((a, b) => {
+      const orderA = initialSheets[a]?.tabOrder ?? Number.MAX_SAFE_INTEGER;
+      const orderB = initialSheets[b]?.tabOrder ?? Number.MAX_SAFE_INTEGER;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.localeCompare(b);
+    });
     let nextActive = activeSheetName;
     if (!nextActive || !initialSheets[nextActive]) {
       nextActive =
@@ -497,9 +511,11 @@ export function ExcelSpreadsheet({
   const rowElementsRef = useRef<Record<number, HTMLTableRowElement | null>>({});
   const headerRowThRef = useRef<HTMLTableCellElement | null>(null);
 
-  // Worksheet management state: immediate add, inline rename, right-click context menu, drag & drop reorder
+  // Worksheet management state: immediate add, inline rename, right-click context menu, pointer drag & drop reorder
   const [isCreatingSheet, setIsCreatingSheet] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const [renamingSheetName, setRenamingSheetName] = useState<string | null>(null);
   const [renameInputValue, setRenameInputValue] = useState<string>('');
   const [, setIsRenamingSheet] = useState(false);
@@ -508,16 +524,45 @@ export function ExcelSpreadsheet({
     x: number;
     y: number;
   } | null>(null);
-  const [pendingDeleteSheet, setPendingDeleteSheet] = useState<string | null>(null);
   const [isDeletingSheet, setIsDeletingSheet] = useState(false);
-  const [draggedSheet, setDraggedSheet] = useState<string | null>(null);
-  const [dragOverSheet, setDragOverSheet] = useState<string | null>(null);
+  const [deletingSheetName, setDeletingSheetName] = useState<string | null>(null);
+  const [dragTabState, setDragTabState] = useState<{
+    sourceName: string;
+    targetIndex: number;
+  } | null>(null);
+  const tabElementRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const tabDragCleanupRef = useRef<(() => void) | null>(null);
+  const suppressNextTabClickRef = useRef<boolean>(false);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingBulkClear, setPendingBulkClear] = useState<{
     updates: Array<{ row: number; col: number; value: string | number }>;
     populatedCount: number;
     includesHeader: boolean;
   } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (tabDragCleanupRef.current) {
+        tabDragCleanupRef.current();
+      }
+    };
+  }, []);
+
+  const sheetKeys = useMemo(() => {
+    return Object.keys(sheets).sort((a, b) => {
+      const orderA = sheets[a]?.tabOrder ?? Number.MAX_SAFE_INTEGER;
+      const orderB = sheets[b]?.tabOrder ?? Number.MAX_SAFE_INTEGER;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.localeCompare(b);
+    });
+  }, [sheets]);
+
+  const sheetKeysRef = useRef(sheetKeys);
+  const sheetsRef = useRef(sheets);
+  useEffect(() => {
+    sheetKeysRef.current = sheetKeys;
+    sheetsRef.current = sheets;
+  });
 
   const currentSheet = useMemo(() => {
     return (
@@ -1649,18 +1694,24 @@ export function ExcelSpreadsheet({
       exportSheetsToExcel(workspace, targetSheets, 'Workspace');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Export failed.';
-      alert(`Export failed: ${msg}`);
+      setOperationError(`Export failed: ${msg}`);
     } finally {
       setIsExporting(false);
     }
   };
 
-  // Close worksheet context menu on click outside or Escape
+  // Close worksheet context menu on click outside or Escape (unless deletion is currently in flight)
   useEffect(() => {
     if (!tabContextMenu) return;
-    const handleGlobalClick = () => setTabContextMenu(null);
+    const handleGlobalClick = () => {
+      if (!isDeletingSheet) {
+        setTabContextMenu(null);
+      }
+    };
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setTabContextMenu(null);
+      if (e.key === 'Escape' && !isDeletingSheet) {
+        setTabContextMenu(null);
+      }
     };
     window.addEventListener('click', handleGlobalClick);
     window.addEventListener('keydown', handleGlobalKeyDown);
@@ -1668,7 +1719,7 @@ export function ExcelSpreadsheet({
       window.removeEventListener('click', handleGlobalClick);
       window.removeEventListener('keydown', handleGlobalKeyDown);
     };
-  }, [tabContextMenu]);
+  }, [tabContextMenu, isDeletingSheet]);
 
   // Helper to determine next available non-conflicting default sheet name
   const getNextAvailableSheetName = useCallback((existingNames: string[]): string => {
@@ -1683,8 +1734,10 @@ export function ExcelSpreadsheet({
   // 6. Immediate Add Worksheet via '+' button (no modal)
   const handleAddSheetImmediate = async () => {
     if (isCreatingSheet) return;
-    const newName = getNextAvailableSheetName(sheetKeys);
+    const currentKeys = sheetKeysRef.current;
+    const newName = getNextAvailableSheetName(currentKeys);
     setIsCreatingSheet(true);
+    setOperationError(null);
 
     try {
       const defaultHeaders =
@@ -1720,27 +1773,44 @@ export function ExcelSpreadsheet({
         })
       });
 
-      const data = await res.json();
+      const data = await parseJsonSafe(res);
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to create worksheet on server.');
+        throw new Error(
+          typeof data.error === 'string' && data.error
+            ? data.error
+            : 'Failed to create worksheet on server.'
+        );
       }
 
-      const createdSheet: SheetState = data.sheet || {
-        name: newName,
-        headers: defaultHeaders,
-        headerVersion: 1,
-        rows: [],
-        rowVersions: {},
-        cellVersions: {},
-        rowUpdatedAt: {}
+      const rawCreated = (data.sheet ?? {}) as Partial<SheetState>;
+      const maxExistingOrder = currentKeys.reduce((maxOrder, k) => {
+        const order = sheetsRef.current[k]?.tabOrder ?? 0;
+        return Math.max(maxOrder, order);
+      }, -1);
+
+      const createdSheet: SheetState = {
+        ...rawCreated,
+        id: rawCreated.id,
+        name: rawCreated.name || newName,
+        tabOrder:
+          typeof rawCreated.tabOrder === 'number' && rawCreated.tabOrder > maxExistingOrder
+            ? rawCreated.tabOrder
+            : maxExistingOrder + 1,
+        headers: Array.isArray(rawCreated.headers) && rawCreated.headers.length > 0 ? rawCreated.headers : defaultHeaders,
+        headerVersion: rawCreated.headerVersion ?? 1,
+        rows: Array.isArray(rawCreated.rows) ? rawCreated.rows : [],
+        rowVersions: rawCreated.rowVersions ?? {},
+        cellVersions: rawCreated.cellVersions ?? {},
+        rowUpdatedAt: rawCreated.rowUpdatedAt ?? {}
       };
 
+      const resolvedName = createdSheet.name || newName;
       setSheets((prev) => ({
         ...prev,
-        [newName]: createdSheet
+        [resolvedName]: createdSheet
       }));
 
-      setActiveSheetName(newName);
+      setActiveSheetName(resolvedName);
       setSelection({
         mode: 'cell',
         anchorRow: 1,
@@ -1749,13 +1819,13 @@ export function ExcelSpreadsheet({
         focusCol: 0
       });
       setScrollPositionRequest((prev) => ({
-        sheetName: newName,
+        sheetName: resolvedName,
         targetRow: 1,
         nonce: prev.nonce + 1
       }));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to create worksheet.';
-      alert(msg);
+      setOperationError(msg);
     } finally {
       setIsCreatingSheet(false);
     }
@@ -1782,22 +1852,23 @@ export function ExcelSpreadsheet({
 
     const validation = validateWorksheetName(trimmed);
     if (!validation.valid) {
-      alert(validation.error);
+      setOperationError(validation.error);
       return;
     }
 
     const otherNames = sheetKeys.filter((n) => n !== oldName);
     if (otherNames.some((n) => n.toLowerCase() === trimmed.toLowerCase())) {
-      alert(`A worksheet named "${trimmed}" already exists.`);
+      setOperationError(`A worksheet named "${trimmed}" already exists.`);
       return;
     }
 
     const targetSheet = sheets[oldName];
     if (!targetSheet?.id) {
-      alert('Cannot rename worksheet before it is saved.');
+      setOperationError('Cannot rename worksheet because its server identifier is missing. Try reloading the workspace.');
       return;
     }
 
+    setOperationError(null);
     setIsRenamingSheet(true);
     try {
       const res = await fetch('/api/records', {
@@ -1811,9 +1882,13 @@ export function ExcelSpreadsheet({
         })
       });
 
-      const data = await res.json();
+      const data = await parseJsonSafe(res);
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to rename worksheet.');
+        throw new Error(
+          typeof data.error === 'string' && data.error
+            ? data.error
+            : 'Failed to rename worksheet.'
+        );
       }
 
       setSheets((prev) => {
@@ -1833,28 +1908,34 @@ export function ExcelSpreadsheet({
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to rename worksheet.';
-      alert(msg);
+      setOperationError(msg);
     } finally {
       setIsRenamingSheet(false);
     }
   };
 
-  // 8. Worksheet Context Menu - Delete
-  const handleDeleteSheet = async (targetSheetName: string) => {
-    if (sheetKeys.length <= 1) {
-      alert(`Cannot delete the only remaining worksheet in the ${workspace} workspace.`);
-      setPendingDeleteSheet(null);
+  // 8. Immediate Worksheet Deletion from Right-Click Context Menu (NO confirmation dialog)
+  const handleDeleteSheetImmediate = async (targetSheetName: string) => {
+    if (isDeletingSheet) return;
+    const currentKeys = sheetKeysRef.current;
+
+    if (currentKeys.length <= 1) {
+      setTabContextMenu(null);
+      setOperationError(`Cannot delete the only remaining worksheet in the ${workspace} workspace.`);
       return;
     }
 
-    const targetSheet = sheets[targetSheetName];
+    const targetSheet = sheetsRef.current[targetSheetName];
     if (!targetSheet?.id) {
-      alert('Worksheet cannot be deleted.');
-      setPendingDeleteSheet(null);
+      setTabContextMenu(null);
+      setOperationError('Worksheet cannot be deleted because its server identifier is missing. Try reloading the workspace.');
       return;
     }
 
+    setOperationError(null);
     setIsDeletingSheet(true);
+    setDeletingSheetName(targetSheetName);
+
     try {
       const res = await fetch('/api/records', {
         method: 'POST',
@@ -1866,72 +1947,245 @@ export function ExcelSpreadsheet({
         })
       });
 
-      const data = await res.json();
+      const data = await parseJsonSafe(res);
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to delete worksheet.');
+        throw new Error(
+          typeof data.error === 'string' && data.error
+            ? data.error
+            : 'Failed to delete worksheet.'
+        );
       }
 
-      const remainingKeys = sheetKeys.filter((k) => k !== targetSheetName);
+      // Discard any unsaved pending edits tied to the deleted worksheet ID
+      const nextDirtyCells = { ...dirtyCellsRef.current };
+      let dirtyCellsChanged = false;
+      for (const [k, edit] of Object.entries(nextDirtyCells)) {
+        if (edit.sheetId === targetSheet.id || edit.sheetName === targetSheetName) {
+          delete nextDirtyCells[k];
+          dirtyCellsChanged = true;
+        }
+      }
+      if (dirtyCellsChanged) {
+        dirtyCellsRef.current = nextDirtyCells;
+        setDirtyCells(nextDirtyCells);
+      }
+
+      const nextDirtyHeaders = { ...dirtyHeadersRef.current };
+      let dirtyHeadersChanged = false;
+      for (const [k, edit] of Object.entries(nextDirtyHeaders)) {
+        if (edit.sheetId === targetSheet.id || edit.sheetName === targetSheetName) {
+          delete nextDirtyHeaders[k];
+          dirtyHeadersChanged = true;
+        }
+      }
+      if (dirtyHeadersChanged) {
+        dirtyHeadersRef.current = nextDirtyHeaders;
+        setDirtyHeaders(nextDirtyHeaders);
+      }
+
+      const deletedIdx = currentKeys.indexOf(targetSheetName);
+      const remainingKeys = currentKeys.filter((k) => k !== targetSheetName);
+
       setSheets((prev) => {
-        const next = { ...prev };
-        delete next[targetSheetName];
+        const orderedRemaining = Object.keys(prev)
+          .filter((k) => k !== targetSheetName)
+          .sort((a, b) => (prev[a]?.tabOrder ?? 0) - (prev[b]?.tabOrder ?? 0));
+        const next: Record<string, SheetState> = {};
+        orderedRemaining.forEach((key, idx) => {
+          next[key] = { ...prev[key], tabOrder: idx };
+        });
         return next;
       });
 
       if (activeSheetName === targetSheetName && remainingKeys.length > 0) {
-        const newActive = remainingKeys[0];
-        setActiveSheetName(newActive);
+        const adjacentIdx = Math.min(deletedIdx >= 0 ? deletedIdx : 0, remainingKeys.length - 1);
+        const adjacentSheetName = remainingKeys[adjacentIdx];
+        const adjacentLatestRow = findLatestRecordGridRow(sheetsRef.current[adjacentSheetName]);
+        setActiveSheetName(adjacentSheetName);
+        setSelection({
+          mode: 'cell',
+          anchorRow: adjacentLatestRow,
+          anchorCol: 0,
+          focusRow: adjacentLatestRow,
+          focusCol: 0
+        });
+        setScrollPositionRequest((prev) => ({
+          sheetName: adjacentSheetName,
+          targetRow: adjacentLatestRow,
+          nonce: prev.nonce + 1
+        }));
       }
-      setPendingDeleteSheet(null);
+
+      setTabContextMenu(null);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to delete worksheet.';
-      alert(msg);
+      setOperationError(msg);
+      setTabContextMenu(null);
     } finally {
       setIsDeletingSheet(false);
+      setDeletingSheetName(null);
     }
   };
 
-  // 9. Worksheet Reordering via Drag and Drop
-  const handleReorderSheets = async (sourceName: string, targetName: string) => {
-    if (sourceName === targetName) return;
-    const currentKeys = [...sheetKeys];
-    const sourceIdx = currentKeys.indexOf(sourceName);
-    const targetIdx = currentKeys.indexOf(targetName);
+  // 9. Worksheet Reordering via Pointer Events + Server Persistence
+  const commitSheetOrder = useCallback(
+    async (orderedKeys: string[]) => {
+      const previousSheets = sheetsRef.current;
+      const orderedSheetIds = orderedKeys
+        .map((k) => previousSheets[k]?.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
 
-    if (sourceIdx === -1 || targetIdx === -1) return;
-
-    currentKeys.splice(sourceIdx, 1);
-    currentKeys.splice(targetIdx, 0, sourceName);
-
-    // Immediately update local state tabOrder
-    setSheets((prev) => {
-      const next = { ...prev };
-      currentKeys.forEach((key, idx) => {
-        if (next[key]) {
-          next[key] = { ...next[key], tabOrder: idx };
+      // Rebuild sheets object in the new order with updated tabOrder indices
+      setSheets((prev) => {
+        const next: Record<string, SheetState> = {};
+        orderedKeys.forEach((key, idx) => {
+          if (prev[key]) {
+            next[key] = { ...prev[key], tabOrder: idx };
+          }
+        });
+        // Preserve any keys not in orderedKeys defensively
+        for (const [k, v] of Object.entries(prev)) {
+          if (!next[k]) {
+            next[k] = v;
+          }
         }
+        return next;
       });
-      return next;
-    });
 
-    const orderedSheetIds = currentKeys
-      .map((k) => sheets[k]?.id)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      if (orderedSheetIds.length === 0) return;
 
-    if (orderedSheetIds.length === 0) return;
+      setOperationError(null);
+      try {
+        const res = await fetch('/api/records', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspace,
+            action: 'reorder_sheets',
+            sheetIds: orderedSheetIds
+          })
+        });
+        const data = await parseJsonSafe(res);
+        if (!res.ok) {
+          throw new Error(
+            typeof data.error === 'string' && data.error
+              ? data.error
+              : 'Failed to persist worksheet order.'
+          );
+        }
+      } catch (err: unknown) {
+        // Revert optimistic tab order on server error so UI matches persisted DB state
+        setSheets(previousSheets);
+        const msg = err instanceof Error ? err.message : 'Failed to reorder worksheets.';
+        setOperationError(msg);
+      }
+    },
+    [workspace]
+  );
 
+  const handleTabPointerDown = useCallback(
+    (name: string, e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (renamingSheetName === name || isDeletingSheet) return;
+
+      const currentKeys = sheetKeysRef.current;
+      if (currentKeys.length <= 1) return;
+
+      if (tabDragCleanupRef.current) {
+        tabDragCleanupRef.current();
+      }
+
+      const sourceIdx = currentKeys.indexOf(name);
+      if (sourceIdx === -1) return;
+
+      // Snapshot initial tab bounding boxes before any visual shifting occurs
+      const initialRects = currentKeys.map((k) => {
+        const el = tabElementRefs.current[k];
+        const rect = el?.getBoundingClientRect();
+        return {
+          name: k,
+          left: rect?.left ?? 0,
+          right: rect?.right ?? 0,
+          midX: rect ? rect.left + rect.width / 2 : 0
+        };
+      });
+
+      const startX = e.clientX;
+      let isDragging = false;
+      let currentTargetIdx = sourceIdx;
+
+      const computeTargetIndex = (clientX: number): number => {
+        const otherTabs = initialRects.filter((r) => r.name !== name);
+        let insertIdx = 0;
+        for (const tab of otherTabs) {
+          if (clientX > tab.midX) {
+            insertIdx++;
+          }
+        }
+        return insertIdx;
+      };
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const deltaX = moveEvent.clientX - startX;
+        if (!isDragging) {
+          if (Math.abs(deltaX) < 6) return;
+          isDragging = true;
+          suppressNextTabClickRef.current = true;
+          setTabContextMenu(null);
+        }
+
+        currentTargetIdx = computeTargetIndex(moveEvent.clientX);
+        setDragTabState({
+          sourceName: name,
+          targetIndex: currentTargetIdx
+        });
+      };
+
+      const finishDrag = (commit: boolean) => {
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerCancel);
+        window.removeEventListener('blur', onWindowBlur);
+        tabDragCleanupRef.current = null;
+
+        setDragTabState(null);
+
+        if (isDragging) {
+          window.setTimeout(() => {
+            suppressNextTabClickRef.current = false;
+          }, 60);
+
+          if (commit && currentTargetIdx !== sourceIdx) {
+            const reordered = currentKeys.filter((k) => k !== name);
+            reordered.splice(currentTargetIdx, 0, name);
+            void commitSheetOrder(reordered);
+          }
+        }
+      };
+
+      const onPointerUp = () => finishDrag(true);
+      const onPointerCancel = () => finishDrag(false);
+      const onWindowBlur = () => finishDrag(false);
+
+      tabDragCleanupRef.current = () => finishDrag(false);
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerCancel);
+      window.addEventListener('blur', onWindowBlur);
+    },
+    [renamingSheetName, isDeletingSheet, commitSheetOrder]
+  );
+
+  const handleSignOutClick = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    setOperationError(null);
     try {
-      await fetch('/api/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspace,
-          action: 'reorder_sheets',
-          sheetIds: orderedSheetIds
-        })
-      });
-    } catch (err) {
-      console.error('Failed to persist sheet reordering in Supabase:', err);
+      await onLogout();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to sign out. Please try again.';
+      setOperationError(msg);
+      setIsLoggingOut(false);
     }
   };
 
@@ -2141,7 +2395,14 @@ export function ExcelSpreadsheet({
     []
   );
 
-  const sheetKeys = Object.keys(sheets);
+  const renderedSheetKeys = useMemo(() => {
+    if (!dragTabState) return sheetKeys;
+    const withoutSource = sheetKeys.filter((k) => k !== dragTabState.sourceName);
+    const clampedIndex = Math.max(0, Math.min(dragTabState.targetIndex, withoutSource.length));
+    withoutSource.splice(clampedIndex, 0, dragTabState.sourceName);
+    return withoutSource;
+  }, [sheetKeys, dragTabState]);
+
   const visibleWorkspaces = allowedWorkspaces && allowedWorkspaces.length > 0 ? allowedWorkspaces : [workspace];
   const staffLabel = user?.name || user?.username || workspace;
 
@@ -2151,37 +2412,37 @@ export function ExcelSpreadsheet({
   return (
     <div
       ref={rootRef}
-      className="flex flex-col h-screen w-full bg-white select-none overflow-hidden font-sans text-xs text-slate-800 outline-none"
+      className="flex flex-col h-screen w-full bg-white dark:bg-slate-950 select-none overflow-hidden font-sans text-xs text-slate-800 dark:text-slate-100 outline-none"
       onKeyDown={handleKeyDown}
       onCopy={handleCopy}
       onPaste={handlePaste}
       tabIndex={0}
     >
       {/* 1. Application Toolbar / Header */}
-      <div className="h-12 px-4 bg-slate-900 text-white border-b border-slate-800 flex items-center justify-between gap-4 shrink-0 shadow-xs">
+      <div className="h-12 px-4 bg-white text-slate-900 border-b border-slate-200 dark:bg-slate-950 dark:text-slate-100 dark:border-slate-800 flex items-center justify-between gap-4 shrink-0 shadow-xs">
         {/* Top-Left: Official MK Eye Center Logo directly, NO background container */}
         <div className="flex items-center shrink-0">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/assets/aistudio/mk_long_logo_a5863dd4.png"
             alt="MK Eye Center Logo"
-            className="h-7 sm:h-8 w-auto object-contain"
+            className="h-7 sm:h-8 w-auto object-contain transition-[filter] duration-150 dark:invert dark:hue-rotate-180 dark:brightness-110 dark:contrast-110"
             referrerPolicy="no-referrer"
           />
         </div>
 
-        {/* Top-Right: Save and Export neatly aligned horizontally */}
-        <div className="flex items-center gap-2.5 ml-auto">
+        {/* Top-Right: Workspace Switcher, Status, Theme Toggle, Save and Export */}
+        <div className="flex items-center gap-2 ml-auto">
           {/* Admin workspace switcher if applicable */}
           {visibleWorkspaces.length > 1 && (
-            <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700 text-xs mr-2">
+            <div className="flex items-center bg-slate-100 dark:bg-slate-900 p-0.5 rounded-lg border border-slate-200 dark:border-slate-800 text-xs mr-1.5">
               <button
                 type="button"
                 onClick={() => onWorkspaceSwitchRequest('reception')}
                 className={`px-3 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
                   activeWorkspace === 'reception'
                     ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-300 hover:text-white'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
                 }`}
               >
                 Reception
@@ -2192,7 +2453,7 @@ export function ExcelSpreadsheet({
                 className={`px-3 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
                   activeWorkspace === 'doctor'
                     ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-300 hover:text-white'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
                 }`}
               >
                 Doctor
@@ -2202,18 +2463,18 @@ export function ExcelSpreadsheet({
 
           {/* Save & Conflict Status Notice */}
           <div className="flex items-center gap-2 text-[11px] mr-1" role="status" aria-live="polite">
-            {isLoading && <span className="text-slate-400">Loading...</span>}
+            {isLoading && <span className="text-slate-500 dark:text-slate-400">Loading...</span>}
             {!isLoading && saveStatus === 'saving' && (
-              <span className="text-slate-300 font-medium">Saving...</span>
+              <span className="text-slate-600 dark:text-slate-300 font-medium">Saving...</span>
             )}
             {!isLoading && saveStatus === 'saved' && !hasUnsavedChanges && (
-              <span className="text-emerald-400 font-semibold">{saveMessage || 'Saved'}</span>
+              <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{saveMessage || 'Saved'}</span>
             )}
             {!isLoading && hasUnsavedChanges && saveStatus !== 'saving' && (
-              <span className="text-amber-400 font-medium">Unsaved</span>
+              <span className="text-amber-600 dark:text-amber-400 font-medium">Unsaved</span>
             )}
             {!isLoading && saveStatus === 'error' && (
-              <span title={saveError || 'Save failed'} className="text-red-400 font-medium max-w-[150px] truncate">
+              <span title={saveError || 'Save failed'} className="text-red-600 dark:text-red-400 font-medium max-w-[150px] truncate">
                 {saveError || 'Save failed'}
               </span>
             )}
@@ -2239,6 +2500,18 @@ export function ExcelSpreadsheet({
             </button>
           )}
 
+          {onToggleTheme && (
+            <button
+              type="button"
+              onClick={onToggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              title={theme === 'dark' ? 'Dark Mode (click for Light Mode)' : 'Light Mode (click for Dark Mode)'}
+              className="h-8 w-8 flex items-center justify-center rounded-lg border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-amber-300 dark:hover:bg-slate-700 transition cursor-pointer shrink-0"
+            >
+              {theme === 'dark' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => void handleSave()}
@@ -2252,7 +2525,7 @@ export function ExcelSpreadsheet({
             type="button"
             onClick={() => void handleDirectExport()}
             disabled={isExporting || sheetKeys.length === 0}
-            className="px-4 py-1.5 font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition disabled:opacity-50 cursor-pointer text-xs"
+            className="px-4 py-1.5 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 dark:text-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 dark:border-slate-700 rounded-lg transition disabled:opacity-50 cursor-pointer text-xs"
           >
             {isExporting ? 'Exporting...' : 'Export'}
           </button>
@@ -2260,12 +2533,12 @@ export function ExcelSpreadsheet({
       </div>
 
       {/* 2. Formula & Cell Address Bar */}
-      <div className="h-8 md:h-7 px-2.5 md:px-3 bg-white border-b border-slate-300 flex items-center gap-2 shrink-0 text-xs">
-        <div className="min-w-16 h-5 px-1.5 bg-slate-50 border border-slate-300 rounded-xs flex items-center justify-center font-mono font-semibold text-slate-700 text-[11px] select-none shrink-0">
+      <div className="h-8 md:h-7 px-2.5 md:px-3 bg-white dark:bg-slate-900 border-b border-slate-300 dark:border-slate-700 flex items-center gap-2 shrink-0 text-xs">
+        <div className="min-w-16 h-5 px-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xs flex items-center justify-center font-mono font-semibold text-slate-700 dark:text-slate-200 text-[11px] select-none shrink-0">
           {selectionAddressLabel}
         </div>
-        <span className="text-slate-400 font-serif italic text-xs select-none">fx</span>
-        <div className="h-4 w-px bg-slate-300 shrink-0" />
+        <span className="text-slate-400 dark:text-slate-500 font-serif italic text-xs select-none">fx</span>
+        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 shrink-0" />
         <input
           type="text"
           value={isEditing ? editValue : String(getCellValue(selectedCell.row, selectedCell.col) ?? '')}
@@ -2290,13 +2563,13 @@ export function ExcelSpreadsheet({
               commitEdit(false, false);
             }
           }}
-          className="flex-1 min-w-0 h-6 md:h-5 px-1.5 bg-transparent text-slate-900 text-xs font-normal outline-none focus:bg-slate-50 rounded-xs disabled:opacity-50"
+          className="flex-1 min-w-0 h-6 md:h-5 px-1.5 bg-transparent text-slate-900 dark:text-slate-100 text-xs font-normal outline-none focus:bg-slate-50 dark:focus:bg-slate-800 rounded-xs disabled:opacity-50"
         />
       </div>
 
       {/* 2.1 Load Error Strip (if Supabase load fails) */}
       {loadError && (
-        <div className="bg-red-50 border-b border-red-200 px-3 py-1.5 flex items-center justify-between text-xs text-red-800 shrink-0">
+        <div className="bg-red-50 dark:bg-red-950/60 border-b border-red-200 dark:border-red-800 px-3 py-1.5 flex items-center justify-between text-xs text-red-800 dark:text-red-200 shrink-0">
           <span>{loadError}</span>
           {onReloadWorkspace && (
             <button
@@ -2311,13 +2584,27 @@ export function ExcelSpreadsheet({
         </div>
       )}
 
+      {/* 2.1b Worksheet Operation / Sign-Out Error Strip */}
+      {operationError && (
+        <div className="bg-red-50 dark:bg-red-950/60 border-b border-red-200 dark:border-red-800 px-3 py-1.5 flex items-center justify-between gap-3 text-xs text-red-800 dark:text-red-200 shrink-0" role="alert">
+          <span>{operationError}</span>
+          <button
+            type="button"
+            onClick={() => setOperationError(null)}
+            className="px-2 py-0.5 text-[11px] font-medium underline cursor-pointer shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* 2.2 Admin Import Result / Error Strip */}
       {user?.role === 'admin' && importNotice && (
         <div
           className={`border-b px-3 py-1.5 flex items-center justify-between text-xs shrink-0 ${
             importNotice.type === 'error'
-              ? 'bg-red-50 border-red-200 text-red-800'
-              : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              ? 'bg-red-50 border-red-200 text-red-800 dark:bg-red-950/60 dark:border-red-800 dark:text-red-200'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-200'
           }`}
         >
           <span>{importNotice.message}</span>
@@ -2336,21 +2623,21 @@ export function ExcelSpreadsheet({
       {/* 3. Main Spreadsheet Grid Viewport */}
       <div
         ref={gridContainerRef}
-        className="flex-1 overflow-auto touch-pan-x touch-pan-y bg-white relative outline-none"
+        className="flex-1 overflow-auto touch-pan-x touch-pan-y bg-white dark:bg-slate-950 relative outline-none"
       >
         {!isLoading && sheetKeys.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-slate-500 p-6 text-center">
-            <p className="text-sm font-medium text-slate-700">
+          <div className="h-full flex flex-col items-center justify-center text-slate-500 dark:text-slate-400 p-6 text-center">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
               No worksheets found in the {workspace === 'doctor' ? 'Doctor' : 'Reception'} workspace yet.
             </p>
-            <p className="text-xs text-slate-500 mt-1">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
               Click the <span className="font-mono font-bold">+</span> button at the bottom left to create a worksheet.
             </p>
             {user?.role === 'admin' && canAdminImport && onRequestInitialImport && (
               <button
                 type="button"
                 onClick={onRequestInitialImport}
-                className="mt-4 px-4 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xs transition cursor-pointer shadow-xs"
+                className="mt-4 px-4 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 rounded-xs transition cursor-pointer shadow-xs"
               >
                 Import Initial Workbooks (Reception &amp; Doctor)
               </button>
@@ -2381,10 +2668,10 @@ export function ExcelSpreadsheet({
                 <th
                   onClick={handleSelectAllClick}
                   title="Select entire worksheet"
-                  className={`w-12 min-w-12 h-6 border-r border-b border-slate-300 sticky top-0 left-0 z-50 select-none text-center cursor-pointer transition-colors ${
+                  className={`w-12 min-w-12 h-6 border-r border-b border-slate-300 dark:border-slate-700 sticky top-0 left-0 z-50 select-none text-center cursor-pointer transition-colors ${
                     selection.mode === 'all'
-                      ? 'bg-slate-700 text-white'
-                      : 'bg-slate-200 hover:bg-slate-300 text-slate-500'
+                      ? 'bg-slate-700 text-white dark:bg-blue-600 dark:text-white'
+                      : 'bg-slate-200 hover:bg-slate-300 text-slate-500 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-400'
                   }`}
                 >
                   <span className="text-[10px] leading-none">◢</span>
@@ -2401,12 +2688,12 @@ export function ExcelSpreadsheet({
                       }}
                       style={{ width: `${width}px`, minWidth: `${width}px` }}
                       onClick={(e) => handleColHeaderClick(cIdx, e.shiftKey)}
-                      className={`h-6 border-r border-b border-slate-300 text-center text-[11px] select-none sticky top-0 z-30 cursor-pointer ${
+                      className={`h-6 border-r border-b border-slate-300 dark:border-slate-700 text-center text-[11px] select-none sticky top-0 z-30 cursor-pointer ${
                         isColSelected && isFullColSelectionMode
-                          ? 'bg-slate-700 text-white font-semibold'
+                          ? 'bg-slate-700 text-white font-semibold dark:bg-blue-600 dark:text-white'
                           : isColSelected
-                            ? 'bg-slate-200 text-slate-900 font-semibold'
-                            : 'bg-slate-100 hover:bg-slate-200/70 font-medium text-slate-700'
+                            ? 'bg-slate-200 text-slate-900 font-semibold dark:bg-slate-800 dark:text-slate-100'
+                            : 'bg-slate-100 hover:bg-slate-200/70 font-medium text-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800 dark:text-slate-300'
                       }`}
                     >
                       <span>{getColumnLetter(cIdx)}</span>
@@ -2433,12 +2720,12 @@ export function ExcelSpreadsheet({
                   ref={headerRowThRef}
                   onClick={(e) => handleRowHeaderClick(0, e.shiftKey)}
                   style={getManualRowHeight(0) ? { height: `${getManualRowHeight(0)}px` } : undefined}
-                  className={`w-12 min-w-12 min-h-[34px] border-r border-b-2 border-slate-300 border-b-slate-400 font-bold text-center text-[11px] sticky top-6 left-0 z-40 select-none cursor-pointer shadow-[0_2px_4px_-1px_rgba(15,23,42,0.12)] ${
+                  className={`w-12 min-w-12 min-h-[34px] border-r border-b-2 border-slate-300 border-b-slate-400 dark:border-slate-700 dark:border-b-slate-600 font-bold text-center text-[11px] sticky top-6 left-0 z-40 select-none cursor-pointer shadow-[0_2px_4px_-1px_rgba(15,23,42,0.12)] ${
                     isRowHeaderHighlighted(0) && isFullRowSelectionMode
-                      ? 'bg-slate-700 text-white'
+                      ? 'bg-slate-700 text-white dark:bg-blue-600 dark:text-white'
                       : isRowHeaderHighlighted(0)
-                        ? 'bg-[#c5d4ea] text-slate-900'
-                        : 'bg-[#d5e0ef] hover:bg-[#c5d4ea] text-slate-800'
+                        ? 'bg-[#c5d4ea] text-slate-900 dark:bg-slate-700 dark:text-slate-100'
+                        : 'bg-[#d5e0ef] hover:bg-[#c5d4ea] text-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200'
                   }`}
                 >
                   <span>1</span>
@@ -2480,11 +2767,11 @@ export function ExcelSpreadsheet({
                       }}
                       onClick={(e) => handleCellClick(0, cIdx, e.shiftKey)}
                       onDoubleClick={(e) => handleCellDoubleClick(0, cIdx, e.detail)}
-                      className={`min-h-[34px] px-2.5 py-1.5 border-r border-b-2 border-slate-300 border-b-slate-400 font-bold text-xs leading-[18px] tracking-[0.01em] sticky top-6 shadow-[0_2px_4px_-1px_rgba(15,23,42,0.1)] align-middle ${alignClass} ${headerBgClass} ${
+                      className={`min-h-[34px] px-2.5 py-1.5 border-r border-b-2 border-slate-300 border-b-slate-400 dark:border-slate-700 dark:border-b-slate-600 font-bold text-xs leading-[18px] tracking-[0.01em] sticky top-6 shadow-[0_2px_4px_-1px_rgba(15,23,42,0.1)] align-middle ${alignClass} ${headerBgClass} ${
                         isAnchor || isCellEditing ? 'z-[25]' : 'z-20'
                       } ${
                         isAnchor && !isCellEditing
-                          ? 'outline-2 outline-slate-900 outline-offset-[-2px]'
+                          ? 'outline-2 outline-slate-900 dark:outline-sky-400 outline-offset-[-2px]'
                           : ''
                       }`}
                     >
@@ -2495,7 +2782,7 @@ export function ExcelSpreadsheet({
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
                           onBlur={() => commitEdit(false, false)}
-                          className={`absolute inset-0 w-full h-full px-2.5 text-xs font-semibold bg-white text-slate-900 border-2 border-slate-900 outline-none z-20 ${alignClass}`}
+                          className={`absolute inset-0 w-full h-full px-2.5 text-xs font-semibold bg-white text-slate-900 border-2 border-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-sky-400 outline-none z-20 ${alignClass}`}
                         />
                       ) : (
                         <div
@@ -2563,55 +2850,33 @@ export function ExcelSpreadsheet({
       </div>
 
       {/* 4. Worksheet Tabs along the bottom with '+' button and Sign Out at bottom-right */}
-      <div className="h-9 md:h-8 bg-slate-200 border-t border-slate-300 flex items-center justify-between px-2 gap-2 shrink-0">
+      <div className="h-9 md:h-8 bg-slate-200 dark:bg-slate-900 border-t border-slate-300 dark:border-slate-700 flex items-center justify-between px-2 gap-2 shrink-0">
         <div className="flex items-center gap-1 overflow-x-auto min-w-0 flex-1 py-0.5">
-          {sheetKeys.map((name) => {
+          {renderedSheetKeys.map((name) => {
             const isActive = activeSheetName === name;
             const isBeingRenamed = renamingSheetName === name;
-            const isDragOver = dragOverSheet === name;
+            const isBeingDragged = dragTabState?.sourceName === name;
+            const isDeletingThis = isDeletingSheet && deletingSheetName === name;
 
             return (
               <div
                 key={name}
-                draggable={!isBeingRenamed}
-                onDragStart={(e) => {
-                  setDraggedSheet(name);
-                  e.dataTransfer.effectAllowed = 'move';
-                  e.dataTransfer.setData('text/plain', name);
+                ref={(el) => {
+                  tabElementRefs.current[name] = el;
                 }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  if (draggedSheet && draggedSheet !== name) {
-                    setDragOverSheet(name);
-                  }
-                }}
-                onDragLeave={() => {
-                  if (dragOverSheet === name) setDragOverSheet(null);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const source = draggedSheet || e.dataTransfer.getData('text/plain');
-                  setDraggedSheet(null);
-                  setDragOverSheet(null);
-                  if (source && source !== name) {
-                    void handleReorderSheets(source, name);
-                  }
-                }}
-                onDragEnd={() => {
-                  setDraggedSheet(null);
-                  setDragOverSheet(null);
-                }}
+                onPointerDown={(e) => handleTabPointerDown(name, e)}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  const menuWidth = 140;
-                  const menuHeight = 80;
+                  if (isDeletingSheet) return;
+                  const menuWidth = 148;
+                  const menuHeight = 84;
                   const x = Math.min(e.clientX, window.innerWidth - menuWidth - 12);
                   const y = Math.max(12, e.clientY - menuHeight - 12);
                   setTabContextMenu({ sheetName: name, x, y });
                 }}
                 onClick={() => {
+                  if (suppressNextTabClickRef.current) return;
                   if (isEditing) commitEdit();
                   if (!isBeingRenamed) {
                     setActiveSheetName(name);
@@ -2632,21 +2897,29 @@ export function ExcelSpreadsheet({
                 }}
                 onDoubleClick={(e) => {
                   e.stopPropagation();
-                  handleStartRename(name);
+                  if (!isDeletingSheet) {
+                    handleStartRename(name);
+                  }
                 }}
-                className={`group relative px-3 py-1 text-xs font-medium border-t-2 rounded-t-xs transition cursor-pointer select-none whitespace-nowrap flex items-center gap-1.5 ${
-                  isActive
-                    ? 'bg-white border-slate-900 text-slate-900 shadow-xs'
-                    : 'bg-slate-200 border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                } ${isDragOver ? 'border-l-2 border-l-blue-600 bg-blue-50' : ''}`}
+                className={`group relative px-3 py-1 text-xs font-medium border-t-2 rounded-t-xs transition-all duration-150 cursor-pointer select-none whitespace-nowrap flex items-center gap-1.5 touch-none ${
+                  isBeingDragged
+                    ? 'bg-blue-50 border-blue-600 text-blue-900 dark:bg-sky-900/70 dark:border-sky-400 dark:text-sky-100 shadow-md ring-2 ring-blue-500/40 dark:ring-sky-400/50 scale-[1.02] z-20'
+                    : isActive
+                      ? 'bg-white border-slate-900 text-slate-900 dark:bg-slate-950 dark:border-sky-400 dark:text-slate-100 shadow-xs'
+                      : 'bg-slate-200 border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200'
+                } ${isDeletingThis ? 'opacity-50' : ''}`}
                 title={`Worksheet: ${name} (Double-click to rename, right-click for options, drag to reorder)`}
               >
+                {isBeingDragged && (
+                  <span className="w-1 h-3 rounded-full bg-blue-600 dark:bg-sky-400 shrink-0" aria-hidden="true" />
+                )}
                 {isBeingRenamed ? (
                   <input
                     ref={renameInputRef}
                     type="text"
                     value={renameInputValue}
                     onChange={(e) => setRenameInputValue(e.target.value)}
+                    onPointerDown={(e) => e.stopPropagation()}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         e.preventDefault();
@@ -2663,7 +2936,7 @@ export function ExcelSpreadsheet({
                     }}
                     onClick={(e) => e.stopPropagation()}
                     maxLength={31}
-                    className="px-1 py-0.5 text-xs font-semibold bg-white border border-blue-600 rounded-xs text-slate-900 outline-none w-28"
+                    className="px-1 py-0.5 text-xs font-semibold bg-white border border-blue-600 rounded-xs text-slate-900 dark:bg-slate-800 dark:border-sky-400 dark:text-slate-100 outline-none w-28"
                   />
                 ) : (
                   <span>{name}</span>
@@ -2675,27 +2948,37 @@ export function ExcelSpreadsheet({
           <button
             type="button"
             onClick={() => void handleAddSheetImmediate()}
-            disabled={isCreatingSheet}
+            disabled={isCreatingSheet || isDeletingSheet}
             title="Create new worksheet"
-            className="h-6 w-6 flex items-center justify-center rounded-xs bg-slate-300/80 hover:bg-slate-300 active:bg-slate-400 text-slate-700 font-bold text-sm cursor-pointer ml-1 shrink-0 transition disabled:opacity-50"
+            className="h-6 w-6 flex items-center justify-center rounded-xs bg-slate-300/80 hover:bg-slate-300 active:bg-slate-400 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:active:bg-slate-600 dark:text-slate-200 font-bold text-sm cursor-pointer ml-1 shrink-0 transition disabled:opacity-50"
           >
             {isCreatingSheet ? '...' : '+'}
           </button>
         </div>
 
         {/* Bottom-Right Corner: Sign Out */}
-        <div className="flex items-center gap-2.5 shrink-0 pl-2.5 border-l border-slate-300">
-          <span className="text-slate-600 font-mono text-[11px] max-w-[120px] sm:max-w-none truncate" title={user?.role}>
+        <div className="flex items-center gap-2.5 shrink-0 pl-2.5 border-l border-slate-300 dark:border-slate-700">
+          <span className="text-slate-600 dark:text-slate-400 font-mono text-[11px] max-w-[120px] sm:max-w-none truncate" title={user?.role}>
             {staffLabel}
           </span>
           <button
             type="button"
-            onClick={onLogout}
-            className="text-xs text-slate-700 hover:text-red-700 font-semibold px-2 py-0.5 rounded-xs hover:bg-slate-300/60 transition cursor-pointer flex items-center gap-1 whitespace-nowrap"
+            onClick={() => void handleSignOutClick()}
+            disabled={isLoggingOut}
+            className="text-xs text-slate-700 hover:text-red-700 font-semibold px-2 py-0.5 rounded-xs hover:bg-slate-300/60 dark:text-slate-200 dark:hover:text-red-400 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap"
             title="Sign Out"
           >
-            <LogOut className="w-3.5 h-3.5" />
-            <span>Sign Out</span>
+            {isLoggingOut ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Signing out...</span>
+              </>
+            ) : (
+              <>
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sign Out</span>
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -2703,57 +2986,40 @@ export function ExcelSpreadsheet({
       {/* 5. Worksheet Tab Context Menu (Right-Click) */}
       {tabContextMenu && (
         <div
-          className="fixed z-50 bg-white border border-slate-300 rounded-sm shadow-xl py-1 w-36 text-xs text-slate-800"
+          className="fixed z-50 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-sm shadow-xl py-1 w-36 text-xs text-slate-800 dark:text-slate-100"
           style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="px-3 py-1 font-semibold text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-100 truncate">
+          <div className="px-3 py-1 font-semibold text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-800 truncate">
             {tabContextMenu.sheetName}
           </div>
           <button
             type="button"
+            disabled={isDeletingSheet}
             onClick={() => handleStartRename(tabContextMenu.sheetName)}
-            className="w-full text-left px-3 py-1.5 hover:bg-slate-100 flex items-center gap-2 cursor-pointer transition"
+            className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 flex items-center gap-2 cursor-pointer transition"
           >
             <span>Rename</span>
           </button>
           <button
             type="button"
             onClick={() => {
-              const target = tabContextMenu.sheetName;
-              setTabContextMenu(null);
-              if (sheetKeys.length <= 1) {
-                alert(`Cannot delete the only remaining worksheet in the ${workspace} workspace.`);
-                return;
-              }
-              setPendingDeleteSheet(target);
+              void handleDeleteSheetImmediate(tabContextMenu.sheetName);
             }}
-            disabled={sheetKeys.length <= 1}
-            className="w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-600 disabled:opacity-40 disabled:hover:bg-transparent flex items-center gap-2 cursor-pointer transition border-t border-slate-100"
+            disabled={sheetKeys.length <= 1 || isDeletingSheet}
+            className="w-full text-left px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-950/60 text-red-600 dark:text-red-400 disabled:opacity-40 disabled:hover:bg-transparent flex items-center gap-2 cursor-pointer transition border-t border-slate-100 dark:border-slate-800"
           >
-            <span>Delete</span>
+            {isDeletingSheet && deletingSheetName === tabContextMenu.sheetName ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                <span>Deleting...</span>
+              </>
+            ) : (
+              <span>Delete</span>
+            )}
           </button>
         </div>
       )}
-
-      {/* Worksheet Delete Confirmation Dialog */}
-      <ConfirmDialog
-        isOpen={pendingDeleteSheet !== null}
-        title="Delete Worksheet"
-        message={
-          pendingDeleteSheet
-            ? `Are you sure you want to delete worksheet "${pendingDeleteSheet}" and all of its records? This action cannot be undone.`
-            : ''
-        }
-        confirmLabel={isDeletingSheet ? 'Deleting...' : 'Delete Worksheet'}
-        confirmVariant="danger"
-        onConfirm={() => {
-          if (pendingDeleteSheet) {
-            void handleDeleteSheet(pendingDeleteSheet);
-          }
-        }}
-        onCancel={() => setPendingDeleteSheet(null)}
-      />
 
       {/* 6. Safeguard Confirmation Modal for Bulk / Row / Column Clear */}
       <ConfirmDialog

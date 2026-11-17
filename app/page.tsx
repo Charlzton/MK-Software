@@ -6,10 +6,12 @@ import { ExcelSpreadsheet, SheetState } from '@/components/ExcelSpreadsheet';
 import { createClient as createBrowserSupabaseClient } from '@/lib/supabase/client';
 import { User } from '@/lib/types';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { useTheme } from '@/hooks/useTheme';
 
 type WorkspaceKey = 'reception' | 'doctor';
 
 export default function Home() {
+  const { theme, toggleTheme } = useTheme();
   const [user, setUser] = useState<User | null>(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
@@ -47,7 +49,11 @@ export default function Home() {
   // Verify browser Supabase client initialization cleanly when client app mounts
   useEffect(() => {
     try {
-      createBrowserSupabaseClient();
+      const client = createBrowserSupabaseClient();
+      if (!client) {
+        // Running in local/in-memory mode without Supabase env vars
+        return;
+      }
     } catch (err) {
       console.error(
         'Browser Supabase client initialization failed:',
@@ -128,12 +134,23 @@ export default function Home() {
     loadAuthorizedWorkspaces(authenticatedUser);
   };
 
-  const handleLogout = async () => {
+  const handleLogout = async (): Promise<void> => {
+    const res = await fetch('/api/auth/logout', { method: 'POST' });
+    let data: { error?: unknown } = {};
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      data = (await res.json()) as { error?: unknown };
     } catch {
-      // ignore
+      // Ignore non-JSON body on success/error
     }
+
+    if (!res.ok) {
+      const msg =
+        typeof data.error === 'string' && data.error
+          ? data.error
+          : 'Failed to sign out. Please try again.';
+      throw new Error(msg);
+    }
+
     setSessionError(null);
     setImportNotice(null);
     setIsImportConfirmOpen(false);
@@ -224,9 +241,9 @@ export default function Home() {
 
   if (isCheckingAuth) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white">
+      <div className="min-h-screen flex items-center justify-center bg-white dark:bg-slate-950">
         <div className="flex flex-col items-center gap-2">
-          <span className="w-5 h-5 border-2 border-slate-300 border-t-slate-800 rounded-full animate-spin" />
+          <span className="w-5 h-5 border-2 border-slate-300 border-t-slate-800 dark:border-slate-700 dark:border-t-slate-200 rounded-full animate-spin" />
         </div>
       </div>
     );
@@ -240,17 +257,6 @@ export default function Home() {
           className="absolute inset-0 bg-cover bg-center bg-no-repeat"
           style={{ backgroundImage: `url('/assets/aistudio/login_bg_de335fe2.jpg')` }}
         />
-
-        {/* Top-left official logo directly on the page on its own */}
-        <div className="absolute top-6 left-6 z-10">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/assets/aistudio/mk_long_logo_a5863dd4.png"
-            alt="MK Eye Center Logo"
-            className="h-10 sm:h-12 w-auto object-contain"
-            referrerPolicy="no-referrer"
-          />
-        </div>
 
         {/* Glassmorphism Login Card Container */}
         <div className="relative z-10 w-full max-w-sm sm:max-w-md mx-auto px-4">
@@ -286,6 +292,8 @@ export default function Home() {
             onUnsavedStatusChange={setReceptionHasUnsaved}
             onReloadWorkspace={() => fetchWorkspace('reception')}
             onLogout={handleLogout}
+            theme={theme}
+            onToggleTheme={toggleTheme}
             isLoading={isLoadingReception}
             loadError={receptionLoadError}
             defaultSheetName="PATIENT'S DATA"
@@ -309,6 +317,8 @@ export default function Home() {
             onUnsavedStatusChange={setDoctorHasUnsaved}
             onReloadWorkspace={() => fetchWorkspace('doctor')}
             onLogout={handleLogout}
+            theme={theme}
+            onToggleTheme={toggleTheme}
             isLoading={isLoadingDoctor}
             loadError={doctorLoadError}
             defaultSheetName="Lens Rx"

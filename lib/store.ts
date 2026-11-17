@@ -183,6 +183,7 @@ interface RawRowRecord {
 interface RawSheetRecord {
   id?: unknown;
   sheetId?: unknown;
+  sheet_id?: unknown;
   name?: unknown;
   sheet_key?: unknown;
   sheetKey?: unknown;
@@ -197,7 +198,7 @@ interface RawSheetRecord {
 }
 
 function normalizeSheetRecord(rawSheet: RawSheetRecord, fallbackName: string, fallbackOrder: number): WorkspaceSheetState {
-  const id = String(rawSheet.id ?? rawSheet.sheetId ?? '');
+  const id = String(rawSheet.id ?? rawSheet.sheetId ?? rawSheet.sheet_id ?? '');
   const name = String(rawSheet.name ?? fallbackName);
   const sheetKeyRaw = rawSheet.sheet_key ?? rawSheet.sheetKey;
   const tabOrder = Number(rawSheet.tab_order ?? rawSheet.tabOrder ?? fallbackOrder);
@@ -372,16 +373,39 @@ export async function createWorkspaceSheetRpc(
     throw mapRpcError(error);
   }
 
-  const raw = (data && typeof data === 'object' ? data : {}) as RawSheetRecord;
-  return normalizeSheetRecord(
+  const rawObj = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  const unwrapped = (
+    rawObj.sheet && typeof rawObj.sheet === 'object' ? rawObj.sheet : rawObj
+  ) as RawSheetRecord;
+
+  const normalized = normalizeSheetRecord(
     {
-      ...raw,
-      name: raw.name ?? validated.name,
-      headers: raw.headers ?? headers ?? []
+      ...unwrapped,
+      name: unwrapped.name ?? validated.name,
+      headers: unwrapped.headers ?? headers ?? []
     },
     validated.name,
-    Number(raw.tab_order ?? raw.tabOrder ?? 0)
+    Number(unwrapped.tab_order ?? unwrapped.tabOrder ?? 0)
   );
+
+  // Ensure created sheet always has its database UUID even if RPC returns partial metadata
+  if (!normalized.id) {
+    const { data: lookupRow } = await supabase
+      .from('workbook_sheets')
+      .select('id, tab_order')
+      .eq('workspace', workspace)
+      .eq('name', validated.name)
+      .maybeSingle<{ id: string; tab_order: number }>();
+
+    if (lookupRow?.id) {
+      normalized.id = String(lookupRow.id);
+      if (Number.isFinite(lookupRow.tab_order)) {
+        normalized.tabOrder = lookupRow.tab_order;
+      }
+    }
+  }
+
+  return normalized;
 }
 
 export async function patchWorkspaceCellRpc(
@@ -573,7 +597,8 @@ export async function renameWorkspaceSheetRpc(
   // Graceful fallback to direct table update if RPC is not yet registered in Supabase
   if (
     error.code === 'PGRST202' ||
-    /function public\.rename_workspace_sheet.*does not exist/i.test(error.message || '')
+    error.code === '42883' ||
+    /rename_workspace_sheet/i.test(error.message || '')
   ) {
     const { data: updateData, error: updateError } = await supabase
       .from('workbook_sheets')
@@ -581,10 +606,17 @@ export async function renameWorkspaceSheetRpc(
       .eq('id', sheetId)
       .eq('workspace', workspace)
       .select('id, name')
-      .single();
+      .maybeSingle();
 
     if (updateError) {
       throw mapRpcError(updateError);
+    }
+    if (!updateData) {
+      throw new StoreRpcError(
+        501,
+        'MIGRATION_REQUIRED',
+        'Worksheet rename could not be persisted (RPC rename_workspace_sheet is not installed or RLS blocked direct update). Run docs/sql/005_fix_worksheet_management.sql in Supabase SQL Editor.'
+      );
     }
     return {
       sheetId: String(updateData.id),
@@ -612,11 +644,27 @@ export async function deleteWorkspaceSheetRpc(
     };
   }
 
-  // Graceful fallback to direct table delete if RPC is not yet registered in Supabase
+  // Graceful fallback to direct table delete ONLY if RPC is not registered yet,
+  // verifying actual row deletion via .select('id') so RLS 0-row blocks never silently succeed.
   if (
     error.code === 'PGRST202' ||
-    /function public\.delete_workspace_sheet.*does not exist/i.test(error.message || '')
+    error.code === '42883' ||
+    /Could not find the function public\.delete_workspace_sheet|function public\.delete_workspace_sheet.*does not exist/i.test(
+      error.message || ''
+    )
   ) {
+    const { data: targetSheet, error: targetLookupErr } = await supabase
+      .from('workbook_sheets')
+      .select('id')
+      .eq('id', sheetId)
+      .eq('workspace', workspace)
+      .maybeSingle();
+
+    if (targetLookupErr) throw mapRpcError(targetLookupErr);
+    if (!targetSheet) {
+      throw new StoreRpcError(404, 'NOT_FOUND', 'Worksheet not found in this workspace.');
+    }
+
     const { count, error: countError } = await supabase
       .from('workbook_sheets')
       .select('id', { count: 'exact', head: true })
@@ -637,12 +685,21 @@ export async function deleteWorkspaceSheetRpc(
       .eq('sheet_id', sheetId);
     if (rowsDeleteError) throw mapRpcError(rowsDeleteError);
 
-    const { error: sheetDeleteError } = await supabase
+    const { data: deletedRows, error: sheetDeleteError } = await supabase
       .from('workbook_sheets')
       .delete()
       .eq('id', sheetId)
-      .eq('workspace', workspace);
+      .eq('workspace', workspace)
+      .select('id');
     if (sheetDeleteError) throw mapRpcError(sheetDeleteError);
+
+    if (!deletedRows || deletedRows.length === 0) {
+      throw new StoreRpcError(
+        501,
+        'MIGRATION_REQUIRED',
+        'Worksheet deletion is blocked by database permissions because delete_workspace_sheet RPC is not installed. Run docs/sql/005_fix_worksheet_management.sql in Supabase SQL Editor.'
+      );
+    }
 
     return { deletedSheetId: sheetId };
   }
@@ -667,21 +724,58 @@ export async function reorderWorkspaceSheetsRpc(
     };
   }
 
-  // Graceful fallback to direct table updates if RPC is not yet registered in Supabase
+  // Graceful fallback to direct table updates ONLY if RPC is not yet registered,
+  // verifying via .select('id') that rows were actually updated.
   if (
     error.code === 'PGRST202' ||
-    /function public\.reorder_workspace_sheets.*does not exist/i.test(error.message || '')
+    error.code === '42883' ||
+    /Could not find the function public\.reorder_workspace_sheets|function public\.reorder_workspace_sheets.*does not exist/i.test(
+      error.message || ''
+    )
   ) {
-    await Promise.all(
+    const tempResults = await Promise.all(
+      sheetIds.map((id, idx) =>
+        supabase
+          .from('workbook_sheets')
+          .update({ tab_order: 100000 + idx })
+          .eq('id', id)
+          .eq('workspace', workspace)
+          .select('id')
+      )
+    );
+
+    const firstTempErr = tempResults.find((r) => r.error)?.error;
+    if (firstTempErr) {
+      throw mapRpcError(firstTempErr);
+    }
+
+    const tempUpdatedCount = tempResults.reduce((sum, r) => sum + (r.data?.length ?? 0), 0);
+    if (tempUpdatedCount === 0) {
+      throw new StoreRpcError(
+        501,
+        'MIGRATION_REQUIRED',
+        'Worksheet reordering is blocked by database permissions because reorder_workspace_sheets RPC is not installed. Run docs/sql/005_fix_worksheet_management.sql in Supabase SQL Editor.'
+      );
+    }
+
+    const results = await Promise.all(
       sheetIds.map((id, idx) =>
         supabase
           .from('workbook_sheets')
           .update({ tab_order: idx })
           .eq('id', id)
           .eq('workspace', workspace)
+          .select('id')
       )
     );
-    return { reorderedCount: sheetIds.length };
+
+    const firstErr = results.find((r) => r.error)?.error;
+    if (firstErr) {
+      throw mapRpcError(firstErr);
+    }
+
+    const updatedCount = results.reduce((sum, r) => sum + (r.data?.length ?? 0), 0);
+    return { reorderedCount: updatedCount };
   }
 
   throw mapRpcError(error);
