@@ -544,3 +544,146 @@ export async function importInitialWorkbooksRpc(
     totalRows: Number(res.total_rows ?? res.totalRows ?? receptionRows + doctorRows)
   };
 }
+
+export async function renameWorkspaceSheetRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  newName: string
+): Promise<{ sheetId: string; name: string }> {
+  const validated = validateWorksheetName(newName);
+  if (!validated.valid) {
+    throw new StoreRpcError(400, 'INVALID_SHEET_NAME', validated.error);
+  }
+
+  const { data, error } = await supabase.rpc('rename_workspace_sheet', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_new_name: validated.name
+  });
+
+  if (!error) {
+    const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+    return {
+      sheetId: String(res.sheetId ?? sheetId),
+      name: String(res.name ?? validated.name)
+    };
+  }
+
+  // Graceful fallback to direct table update if RPC is not yet registered in Supabase
+  if (
+    error.code === 'PGRST202' ||
+    /function public\.rename_workspace_sheet.*does not exist/i.test(error.message || '')
+  ) {
+    const { data: updateData, error: updateError } = await supabase
+      .from('workbook_sheets')
+      .update({ name: validated.name, sheet_key: validated.name })
+      .eq('id', sheetId)
+      .eq('workspace', workspace)
+      .select('id, name')
+      .single();
+
+    if (updateError) {
+      throw mapRpcError(updateError);
+    }
+    return {
+      sheetId: String(updateData.id),
+      name: String(updateData.name)
+    };
+  }
+
+  throw mapRpcError(error);
+}
+
+export async function deleteWorkspaceSheetRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string
+): Promise<{ deletedSheetId: string }> {
+  const { data, error } = await supabase.rpc('delete_workspace_sheet', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId
+  });
+
+  if (!error) {
+    const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+    return {
+      deletedSheetId: String(res.deletedSheetId ?? sheetId)
+    };
+  }
+
+  // Graceful fallback to direct table delete if RPC is not yet registered in Supabase
+  if (
+    error.code === 'PGRST202' ||
+    /function public\.delete_workspace_sheet.*does not exist/i.test(error.message || '')
+  ) {
+    const { count, error: countError } = await supabase
+      .from('workbook_sheets')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace', workspace);
+
+    if (countError) throw mapRpcError(countError);
+    if ((count ?? 0) <= 1) {
+      throw new StoreRpcError(
+        400,
+        'BAD_REQUEST',
+        `Cannot delete the only remaining worksheet in the ${workspace} workspace.`
+      );
+    }
+
+    const { error: rowsDeleteError } = await supabase
+      .from('workbook_rows')
+      .delete()
+      .eq('sheet_id', sheetId);
+    if (rowsDeleteError) throw mapRpcError(rowsDeleteError);
+
+    const { error: sheetDeleteError } = await supabase
+      .from('workbook_sheets')
+      .delete()
+      .eq('id', sheetId)
+      .eq('workspace', workspace);
+    if (sheetDeleteError) throw mapRpcError(sheetDeleteError);
+
+    return { deletedSheetId: sheetId };
+  }
+
+  throw mapRpcError(error);
+}
+
+export async function reorderWorkspaceSheetsRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetIds: string[]
+): Promise<{ reorderedCount: number }> {
+  const { data, error } = await supabase.rpc('reorder_workspace_sheets', {
+    p_workspace: workspace,
+    p_sheet_ids: sheetIds
+  });
+
+  if (!error) {
+    const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+    return {
+      reorderedCount: Number(res.reorderedCount ?? sheetIds.length)
+    };
+  }
+
+  // Graceful fallback to direct table updates if RPC is not yet registered in Supabase
+  if (
+    error.code === 'PGRST202' ||
+    /function public\.reorder_workspace_sheets.*does not exist/i.test(error.message || '')
+  ) {
+    await Promise.all(
+      sheetIds.map((id, idx) =>
+        supabase
+          .from('workbook_sheets')
+          .update({ tab_order: idx })
+          .eq('id', id)
+          .eq('workspace', workspace)
+      )
+    );
+    return { reorderedCount: sheetIds.length };
+  }
+
+  throw mapRpcError(error);
+}
+

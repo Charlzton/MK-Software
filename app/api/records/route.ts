@@ -8,6 +8,9 @@ import {
   canRoleAccessWorkspace,
   loadWorkspaceWorkbook,
   createWorkspaceSheetRpc,
+  renameWorkspaceSheetRpc,
+  deleteWorkspaceSheetRpc,
+  reorderWorkspaceSheetsRpc,
   patchWorkspaceCellRpc,
   patchWorkspaceCellsBatchRpc,
   patchWorkspaceHeaderRpc
@@ -295,10 +298,59 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // 5. Rename worksheet
+    if (action === 'rename_sheet') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      const newName = typeof body.newName === 'string' ? body.newName.trim() : '';
+
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+      if (!newName) {
+        return NextResponse.json({ error: 'newName is required.' }, { status: 400 });
+      }
+
+      const result = await renameWorkspaceSheetRpc(supabase, workspaceParam, sheetId, newName);
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
+    // 6. Delete worksheet
+    if (action === 'delete_sheet') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+
+      const result = await deleteWorkspaceSheetRpc(supabase, workspaceParam, sheetId);
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
+    // 7. Reorder worksheets
+    if (action === 'reorder_sheets') {
+      if (!Array.isArray(body.sheetIds) || body.sheetIds.length === 0 || !body.sheetIds.every((id) => typeof id === 'string')) {
+        return NextResponse.json({ error: 'sheetIds must be a non-empty array of strings.' }, { status: 400 });
+      }
+
+      const result = await reorderWorkspaceSheetsRpc(supabase, workspaceParam, body.sheetIds as string[]);
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
     return NextResponse.json(
       {
         error:
-          'Invalid or unsupported action. Supported actions: create_sheet, patch_cell, patch_cells_batch, patch_header.'
+          'Invalid or unsupported action. Supported actions: create_sheet, rename_sheet, delete_sheet, reorder_sheets, patch_cell, patch_cells_batch, patch_header.'
       },
       { status: 400 }
     );

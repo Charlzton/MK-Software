@@ -2,9 +2,10 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import * as XLSX from 'xlsx';
+import { LogOut } from 'lucide-react';
 import { User } from '@/lib/types';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import type { WorkspaceSheetState } from '@/lib/store';
+import { validateWorksheetName, type WorkspaceSheetState } from '@/lib/store';
 import { exportSheetsToExcel } from '@/lib/excelUtils';
 import {
   getColumnVisualMeta,
@@ -496,12 +497,22 @@ export function ExcelSpreadsheet({
   const rowElementsRef = useRef<Record<number, HTMLTableRowElement | null>>({});
   const headerRowThRef = useRef<HTMLTableCellElement | null>(null);
 
-  // Add sheet modal & bulk delete confirmation state
-  const [isAddSheetModalOpen, setIsAddSheetModalOpen] = useState(false);
-  const [newSheetNameInput, setNewSheetNameInput] = useState('');
-  const [addSheetError, setAddSheetError] = useState<string | null>(null);
+  // Worksheet management state: immediate add, inline rename, right-click context menu, drag & drop reorder
   const [isCreatingSheet, setIsCreatingSheet] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
+  const [renamingSheetName, setRenamingSheetName] = useState<string | null>(null);
+  const [renameInputValue, setRenameInputValue] = useState<string>('');
+  const [, setIsRenamingSheet] = useState(false);
+  const [tabContextMenu, setTabContextMenu] = useState<{
+    sheetName: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [pendingDeleteSheet, setPendingDeleteSheet] = useState<string | null>(null);
+  const [isDeletingSheet, setIsDeletingSheet] = useState(false);
+  const [draggedSheet, setDraggedSheet] = useState<string | null>(null);
+  const [dragOverSheet, setDragOverSheet] = useState<string | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingBulkClear, setPendingBulkClear] = useState<{
     updates: Array<{ row: number; col: number; value: string | number }>;
     populatedCount: number;
@@ -1644,33 +1655,36 @@ export function ExcelSpreadsheet({
     }
   };
 
-  // Add Worksheet via '+' button -> create_workspace_sheet RPC
-  const handleCreateNewSheet = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newSheetNameInput.trim();
-    if (!trimmed) {
-      setAddSheetError('Please enter a worksheet name.');
-      return;
-    }
+  // Close worksheet context menu on click outside or Escape
+  useEffect(() => {
+    if (!tabContextMenu) return;
+    const handleGlobalClick = () => setTabContextMenu(null);
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTabContextMenu(null);
+    };
+    window.addEventListener('click', handleGlobalClick);
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener('click', handleGlobalClick);
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, [tabContextMenu]);
 
-    if (trimmed.length > 31) {
-      setAddSheetError('Worksheet name cannot exceed 31 characters.');
-      return;
+  // Helper to determine next available non-conflicting default sheet name
+  const getNextAvailableSheetName = useCallback((existingNames: string[]): string => {
+    const lowerSet = new Set(existingNames.map((n) => n.trim().toLowerCase()));
+    let idx = 1;
+    while (lowerSet.has(`sheet ${idx}`.toLowerCase()) || lowerSet.has(`sheet${idx}`.toLowerCase())) {
+      idx++;
     }
+    return `Sheet ${idx}`;
+  }, []);
 
-    if (/[\\/?*[\]:]/.test(trimmed)) {
-      setAddSheetError('Name cannot contain any of: \\ / ? * [ ] :');
-      return;
-    }
-
-    const existingNames = Object.keys(sheets);
-    if (existingNames.some((n) => n.toLowerCase() === trimmed.toLowerCase())) {
-      setAddSheetError(`A worksheet named "${trimmed}" already exists.`);
-      return;
-    }
-
+  // 6. Immediate Add Worksheet via '+' button (no modal)
+  const handleAddSheetImmediate = async () => {
+    if (isCreatingSheet) return;
+    const newName = getNextAvailableSheetName(sheetKeys);
     setIsCreatingSheet(true);
-    setAddSheetError(null);
 
     try {
       const defaultHeaders =
@@ -1701,7 +1715,7 @@ export function ExcelSpreadsheet({
         body: JSON.stringify({
           workspace,
           action: 'create_sheet',
-          sheetName: trimmed,
+          sheetName: newName,
           headers: defaultHeaders
         })
       });
@@ -1712,7 +1726,7 @@ export function ExcelSpreadsheet({
       }
 
       const createdSheet: SheetState = data.sheet || {
-        name: trimmed,
+        name: newName,
         headers: defaultHeaders,
         headerVersion: 1,
         rows: [],
@@ -1723,10 +1737,10 @@ export function ExcelSpreadsheet({
 
       setSheets((prev) => ({
         ...prev,
-        [trimmed]: createdSheet
+        [newName]: createdSheet
       }));
 
-      setActiveSheetName(trimmed);
+      setActiveSheetName(newName);
       setSelection({
         mode: 'cell',
         anchorRow: 1,
@@ -1735,17 +1749,189 @@ export function ExcelSpreadsheet({
         focusCol: 0
       });
       setScrollPositionRequest((prev) => ({
-        sheetName: trimmed,
+        sheetName: newName,
         targetRow: 1,
         nonce: prev.nonce + 1
       }));
-      setIsAddSheetModalOpen(false);
-      setNewSheetNameInput('');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to create worksheet.';
-      setAddSheetError(msg);
+      alert(msg);
     } finally {
       setIsCreatingSheet(false);
+    }
+  };
+
+  // 7. Worksheet Renaming via Double-Click or Context Menu
+  const handleStartRename = (targetName: string) => {
+    setRenamingSheetName(targetName);
+    setRenameInputValue(targetName);
+    setTabContextMenu(null);
+    setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 20);
+  };
+
+  const handleCommitRename = async (oldName: string, rawNewName: string) => {
+    const trimmed = rawNewName.trim();
+    setRenamingSheetName(null);
+
+    if (!trimmed || trimmed === oldName) {
+      return;
+    }
+
+    const validation = validateWorksheetName(trimmed);
+    if (!validation.valid) {
+      alert(validation.error);
+      return;
+    }
+
+    const otherNames = sheetKeys.filter((n) => n !== oldName);
+    if (otherNames.some((n) => n.toLowerCase() === trimmed.toLowerCase())) {
+      alert(`A worksheet named "${trimmed}" already exists.`);
+      return;
+    }
+
+    const targetSheet = sheets[oldName];
+    if (!targetSheet?.id) {
+      alert('Cannot rename worksheet before it is saved.');
+      return;
+    }
+
+    setIsRenamingSheet(true);
+    try {
+      const res = await fetch('/api/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspace,
+          action: 'rename_sheet',
+          sheetId: targetSheet.id,
+          newName: trimmed
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to rename worksheet.');
+      }
+
+      setSheets((prev) => {
+        const next: Record<string, SheetState> = {};
+        for (const [k, v] of Object.entries(prev)) {
+          if (k === oldName) {
+            next[trimmed] = { ...v, name: trimmed };
+          } else {
+            next[k] = v;
+          }
+        }
+        return next;
+      });
+
+      if (activeSheetName === oldName) {
+        setActiveSheetName(trimmed);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to rename worksheet.';
+      alert(msg);
+    } finally {
+      setIsRenamingSheet(false);
+    }
+  };
+
+  // 8. Worksheet Context Menu - Delete
+  const handleDeleteSheet = async (targetSheetName: string) => {
+    if (sheetKeys.length <= 1) {
+      alert(`Cannot delete the only remaining worksheet in the ${workspace} workspace.`);
+      setPendingDeleteSheet(null);
+      return;
+    }
+
+    const targetSheet = sheets[targetSheetName];
+    if (!targetSheet?.id) {
+      alert('Worksheet cannot be deleted.');
+      setPendingDeleteSheet(null);
+      return;
+    }
+
+    setIsDeletingSheet(true);
+    try {
+      const res = await fetch('/api/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspace,
+          action: 'delete_sheet',
+          sheetId: targetSheet.id
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to delete worksheet.');
+      }
+
+      const remainingKeys = sheetKeys.filter((k) => k !== targetSheetName);
+      setSheets((prev) => {
+        const next = { ...prev };
+        delete next[targetSheetName];
+        return next;
+      });
+
+      if (activeSheetName === targetSheetName && remainingKeys.length > 0) {
+        const newActive = remainingKeys[0];
+        setActiveSheetName(newActive);
+      }
+      setPendingDeleteSheet(null);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to delete worksheet.';
+      alert(msg);
+    } finally {
+      setIsDeletingSheet(false);
+    }
+  };
+
+  // 9. Worksheet Reordering via Drag and Drop
+  const handleReorderSheets = async (sourceName: string, targetName: string) => {
+    if (sourceName === targetName) return;
+    const currentKeys = [...sheetKeys];
+    const sourceIdx = currentKeys.indexOf(sourceName);
+    const targetIdx = currentKeys.indexOf(targetName);
+
+    if (sourceIdx === -1 || targetIdx === -1) return;
+
+    currentKeys.splice(sourceIdx, 1);
+    currentKeys.splice(targetIdx, 0, sourceName);
+
+    // Immediately update local state tabOrder
+    setSheets((prev) => {
+      const next = { ...prev };
+      currentKeys.forEach((key, idx) => {
+        if (next[key]) {
+          next[key] = { ...next[key], tabOrder: idx };
+        }
+      });
+      return next;
+    });
+
+    const orderedSheetIds = currentKeys
+      .map((k) => sheets[k]?.id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+
+    if (orderedSheetIds.length === 0) return;
+
+    try {
+      await fetch('/api/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspace,
+          action: 'reorder_sheets',
+          sheetIds: orderedSheetIds
+        })
+      });
+    } catch (err) {
+      console.error('Failed to persist sheet reordering in Supabase:', err);
     }
   };
 
@@ -1972,64 +2158,62 @@ export function ExcelSpreadsheet({
       tabIndex={0}
     >
       {/* 1. Application Toolbar / Header */}
-      <div className="min-h-12 py-1.5 md:h-12 md:py-0 px-3 bg-slate-900 text-white border-b border-slate-800 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 shrink-0 shadow-sm">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Official MK Eye Center Logo */}
-          <div className="flex items-center bg-white px-2.5 py-1 rounded-lg shadow-xs">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/assets/aistudio/mk_long_logo_a5863dd4.png"
-              alt="MK Eye Center Logo"
-              className="h-6 w-auto object-contain"
-              referrerPolicy="no-referrer"
-            />
-          </div>
+      <div className="h-12 px-4 bg-slate-900 text-white border-b border-slate-800 flex items-center justify-between gap-4 shrink-0 shadow-xs">
+        {/* Top-Left: Official MK Eye Center Logo directly, NO background container */}
+        <div className="flex items-center shrink-0">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/assets/aistudio/mk_long_logo_a5863dd4.png"
+            alt="MK Eye Center Logo"
+            className="h-7 sm:h-8 w-auto object-contain"
+            referrerPolicy="no-referrer"
+          />
+        </div>
 
-          <button
-            type="button"
-            onClick={() => void handleSave()}
-            disabled={saveStatus === 'saving' || isLoading || !currentSheet.id}
-            className="px-3.5 py-1.5 md:py-1 font-semibold text-white bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-lg transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5 text-xs shadow-xs"
-          >
-            {saveStatus === 'saving' ? 'Saving...' : 'Save'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => void handleDirectExport()}
-            disabled={isExporting || sheetKeys.length === 0}
-            className="px-3.5 py-1.5 md:py-1 font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition disabled:opacity-50 cursor-pointer text-xs"
-          >
-            {isExporting ? 'Exporting...' : 'Export'}
-          </button>
-
-          {user?.role === 'admin' && canAdminImport && onRequestInitialImport && (
-            <button
-              type="button"
-              onClick={onRequestInitialImport}
-              className="px-3 py-1.5 md:py-1 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition cursor-pointer text-xs"
-            >
-              Import Initial Workbooks
-            </button>
+        {/* Top-Right: Save and Export neatly aligned horizontally */}
+        <div className="flex items-center gap-2.5 ml-auto">
+          {/* Admin workspace switcher if applicable */}
+          {visibleWorkspaces.length > 1 && (
+            <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700 text-xs mr-2">
+              <button
+                type="button"
+                onClick={() => onWorkspaceSwitchRequest('reception')}
+                className={`px-3 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
+                  activeWorkspace === 'reception'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                Reception
+              </button>
+              <button
+                type="button"
+                onClick={() => onWorkspaceSwitchRequest('doctor')}
+                className={`px-3 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
+                  activeWorkspace === 'doctor'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                Doctor
+              </button>
+            </div>
           )}
 
           {/* Save & Conflict Status Notice */}
-          <div className="sm:ml-1 flex items-center gap-2 text-[11px]" role="status" aria-live="polite">
-            {isLoading && <span className="text-slate-400">Loading workbook from Supabase...</span>}
+          <div className="flex items-center gap-2 text-[11px] mr-1" role="status" aria-live="polite">
+            {isLoading && <span className="text-slate-400">Loading...</span>}
             {!isLoading && saveStatus === 'saving' && (
-              <span className="text-slate-300 font-medium">Saving changes...</span>
+              <span className="text-slate-300 font-medium">Saving...</span>
             )}
             {!isLoading && saveStatus === 'saved' && !hasUnsavedChanges && (
-              <span className="text-emerald-400 font-semibold">{saveMessage || 'Saved changes'}</span>
+              <span className="text-emerald-400 font-semibold">{saveMessage || 'Saved'}</span>
             )}
             {!isLoading && hasUnsavedChanges && saveStatus !== 'saving' && (
-              <span className="text-amber-400 font-medium">Unsaved edits</span>
+              <span className="text-amber-400 font-medium">Unsaved</span>
             )}
             {!isLoading && saveStatus === 'error' && (
-              <span
-                title={saveError || 'Save failed'}
-                className="text-red-400 font-medium max-w-[200px] sm:max-w-xs md:max-w-md truncate"
-              >
+              <span title={saveError || 'Save failed'} className="text-red-400 font-medium max-w-[150px] truncate">
                 {saveError || 'Save failed'}
               </span>
             )}
@@ -2040,61 +2224,38 @@ export function ExcelSpreadsheet({
                 disabled={isReloading}
                 className="px-2 py-0.5 bg-red-600 text-white rounded-md font-medium hover:bg-red-700 cursor-pointer disabled:opacity-50 text-[11px]"
               >
-                {isReloading ? 'Reloading...' : 'Reload Latest'}
+                {isReloading ? 'Reload' : 'Reload'}
               </button>
             )}
           </div>
-        </div>
 
-        {/* Center/Right: Role-Authorized Workspace Tabs + Staff Identity + Sign Out */}
-        <div className="flex items-center gap-3 sm:gap-4 ml-auto">
-          {visibleWorkspaces.length > 1 ? (
-            <div className="flex items-center bg-slate-800 p-1 rounded-lg border border-slate-700 text-xs">
-              {visibleWorkspaces.includes('reception') && (
-                <button
-                  type="button"
-                  onClick={() => onWorkspaceSwitchRequest('reception')}
-                  className={`px-3.5 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
-                    activeWorkspace === 'reception'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-300 hover:text-white'
-                  }`}
-                >
-                  Reception
-                </button>
-              )}
-              {visibleWorkspaces.includes('doctor') && (
-                <button
-                  type="button"
-                  onClick={() => onWorkspaceSwitchRequest('doctor')}
-                  className={`px-3.5 py-1 font-semibold text-xs rounded-md transition cursor-pointer ${
-                    activeWorkspace === 'doctor'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-300 hover:text-white'
-                  }`}
-                >
-                  Doctor
-                </button>
-              )}
-            </div>
-          ) : (
-            <span className="px-3 py-1 font-semibold text-xs bg-slate-800 text-slate-200 border border-slate-700 rounded-lg">
-              {workspace === 'doctor' ? 'Doctor Workspace' : 'Reception Workspace'}
-            </span>
-          )}
-
-          <div className="flex items-center gap-3 border-l border-slate-700 pl-3">
-            <span className="text-slate-300 font-mono text-[11px] max-w-[120px] sm:max-w-none truncate" title={user?.role}>
-              {staffLabel}
-            </span>
+          {user?.role === 'admin' && canAdminImport && onRequestInitialImport && (
             <button
               type="button"
-              onClick={onLogout}
-              className="text-slate-300 hover:text-white underline text-xs cursor-pointer whitespace-nowrap font-medium"
+              onClick={onRequestInitialImport}
+              className="px-3 py-1.5 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition cursor-pointer text-xs"
             >
-              Sign Out
+              Import Workbooks
             </button>
-          </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={saveStatus === 'saving' || isLoading || !currentSheet.id}
+            className="px-4 py-1.5 font-semibold text-white bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-lg transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5 text-xs shadow-xs"
+          >
+            {saveStatus === 'saving' ? 'Saving...' : 'Save'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleDirectExport()}
+            disabled={isExporting || sheetKeys.length === 0}
+            className="px-4 py-1.5 font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition disabled:opacity-50 cursor-pointer text-xs"
+          >
+            {isExporting ? 'Exporting...' : 'Export'}
+          </button>
         </div>
       </div>
 
@@ -2401,112 +2562,198 @@ export function ExcelSpreadsheet({
         )}
       </div>
 
-      {/* 4. Worksheet Tabs along the bottom with '+' button */}
-      <div className="h-9 md:h-8 bg-slate-200 border-t border-slate-300 flex items-center px-2 gap-1 shrink-0 overflow-x-auto">
-        {sheetKeys.map((name) => {
-          const isActive = activeSheetName === name;
-          return (
-            <button
-              key={name}
-              type="button"
-              onClick={() => {
-                if (isEditing) commitEdit();
-                setActiveSheetName(name);
-                const latestRow = findLatestRecordGridRow(sheets[name]);
-                setSelection({
-                  mode: 'cell',
-                  anchorRow: latestRow,
-                  anchorCol: 0,
-                  focusRow: latestRow,
-                  focusCol: 0
-                });
-                setScrollPositionRequest((prev) => ({
-                  sheetName: name,
-                  targetRow: latestRow,
-                  nonce: prev.nonce + 1
-                }));
-              }}
-              className={`px-3 py-1.5 md:py-1 text-xs font-medium border-t-2 rounded-t-xs transition cursor-pointer whitespace-nowrap ${
-                isActive
-                  ? 'bg-white border-slate-900 text-slate-900 shadow-xs'
-                  : 'bg-slate-200 border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              {name}
-            </button>
-          );
-        })}
+      {/* 4. Worksheet Tabs along the bottom with '+' button and Sign Out at bottom-right */}
+      <div className="h-9 md:h-8 bg-slate-200 border-t border-slate-300 flex items-center justify-between px-2 gap-2 shrink-0">
+        <div className="flex items-center gap-1 overflow-x-auto min-w-0 flex-1 py-0.5">
+          {sheetKeys.map((name) => {
+            const isActive = activeSheetName === name;
+            const isBeingRenamed = renamingSheetName === name;
+            const isDragOver = dragOverSheet === name;
 
-        <button
-          type="button"
-          onClick={() => {
-            setAddSheetError(null);
-            setNewSheetNameInput('');
-            setIsAddSheetModalOpen(true);
-          }}
-          title={`New worksheet in ${workspace === 'doctor' ? 'Doctor' : 'Reception'}`}
-          className="h-6 w-6 flex items-center justify-center rounded-xs bg-slate-300/80 hover:bg-slate-300 active:bg-slate-400 text-slate-700 font-bold text-sm cursor-pointer ml-1 shrink-0 transition"
-        >
-          +
-        </button>
+            return (
+              <div
+                key={name}
+                draggable={!isBeingRenamed}
+                onDragStart={(e) => {
+                  setDraggedSheet(name);
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('text/plain', name);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (draggedSheet && draggedSheet !== name) {
+                    setDragOverSheet(name);
+                  }
+                }}
+                onDragLeave={() => {
+                  if (dragOverSheet === name) setDragOverSheet(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const source = draggedSheet || e.dataTransfer.getData('text/plain');
+                  setDraggedSheet(null);
+                  setDragOverSheet(null);
+                  if (source && source !== name) {
+                    void handleReorderSheets(source, name);
+                  }
+                }}
+                onDragEnd={() => {
+                  setDraggedSheet(null);
+                  setDragOverSheet(null);
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const menuWidth = 140;
+                  const menuHeight = 80;
+                  const x = Math.min(e.clientX, window.innerWidth - menuWidth - 12);
+                  const y = Math.max(12, e.clientY - menuHeight - 12);
+                  setTabContextMenu({ sheetName: name, x, y });
+                }}
+                onClick={() => {
+                  if (isEditing) commitEdit();
+                  if (!isBeingRenamed) {
+                    setActiveSheetName(name);
+                    const latestRow = findLatestRecordGridRow(sheets[name]);
+                    setSelection({
+                      mode: 'cell',
+                      anchorRow: latestRow,
+                      anchorCol: 0,
+                      focusRow: latestRow,
+                      focusCol: 0
+                    });
+                    setScrollPositionRequest((prev) => ({
+                      sheetName: name,
+                      targetRow: latestRow,
+                      nonce: prev.nonce + 1
+                    }));
+                  }
+                }}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  handleStartRename(name);
+                }}
+                className={`group relative px-3 py-1 text-xs font-medium border-t-2 rounded-t-xs transition cursor-pointer select-none whitespace-nowrap flex items-center gap-1.5 ${
+                  isActive
+                    ? 'bg-white border-slate-900 text-slate-900 shadow-xs'
+                    : 'bg-slate-200 border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                } ${isDragOver ? 'border-l-2 border-l-blue-600 bg-blue-50' : ''}`}
+                title={`Worksheet: ${name} (Double-click to rename, right-click for options, drag to reorder)`}
+              >
+                {isBeingRenamed ? (
+                  <input
+                    ref={renameInputRef}
+                    type="text"
+                    value={renameInputValue}
+                    onChange={(e) => setRenameInputValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void handleCommitRename(name, renameInputValue);
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setRenamingSheetName(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      void handleCommitRename(name, renameInputValue);
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    maxLength={31}
+                    className="px-1 py-0.5 text-xs font-semibold bg-white border border-blue-600 rounded-xs text-slate-900 outline-none w-28"
+                  />
+                ) : (
+                  <span>{name}</span>
+                )}
+              </div>
+            );
+          })}
+
+          <button
+            type="button"
+            onClick={() => void handleAddSheetImmediate()}
+            disabled={isCreatingSheet}
+            title="Create new worksheet"
+            className="h-6 w-6 flex items-center justify-center rounded-xs bg-slate-300/80 hover:bg-slate-300 active:bg-slate-400 text-slate-700 font-bold text-sm cursor-pointer ml-1 shrink-0 transition disabled:opacity-50"
+          >
+            {isCreatingSheet ? '...' : '+'}
+          </button>
+        </div>
+
+        {/* Bottom-Right Corner: Sign Out */}
+        <div className="flex items-center gap-2.5 shrink-0 pl-2.5 border-l border-slate-300">
+          <span className="text-slate-600 font-mono text-[11px] max-w-[120px] sm:max-w-none truncate" title={user?.role}>
+            {staffLabel}
+          </span>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="text-xs text-slate-700 hover:text-red-700 font-semibold px-2 py-0.5 rounded-xs hover:bg-slate-300/60 transition cursor-pointer flex items-center gap-1 whitespace-nowrap"
+            title="Sign Out"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sign Out</span>
+          </button>
+        </div>
       </div>
 
-      {/* 5. Modal for Adding a New Worksheet */}
-      {isAddSheetModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/30 backdrop-blur-xs">
-          <div className="w-full max-w-sm bg-white rounded-xs shadow-xl border border-slate-300 p-5 space-y-4">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">
-                New Worksheet ({workspace === 'reception' ? 'Reception' : 'Doctor'})
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Enter a name for the new worksheet tab in the {workspace === 'doctor' ? 'Doctor' : 'Reception'} workbook.
-              </p>
-            </div>
-
-            <form onSubmit={handleCreateNewSheet} className="space-y-3">
-              <div>
-                <input
-                  type="text"
-                  autoFocus
-                  placeholder="e.g. CONSULTATIONS, Sheet3"
-                  value={newSheetNameInput}
-                  onChange={(e) => setNewSheetNameInput(e.target.value)}
-                  maxLength={31}
-                  className="w-full h-8 px-2.5 text-xs bg-white border border-slate-300 rounded-xs focus:border-slate-900 focus:outline-none"
-                />
-                <span className="text-[10px] text-slate-400 mt-1 block">
-                  Max 31 characters. Cannot contain: \ / ? * [ ] :
-                </span>
-              </div>
-
-              {addSheetError && (
-                <div className="p-2 bg-red-50 border border-red-200 rounded-xs text-[11px] text-red-700">
-                  {addSheetError}
-                </div>
-              )}
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setIsAddSheetModalOpen(false)}
-                  disabled={isCreatingSheet}
-                  className="px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100 rounded-xs border border-slate-300 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isCreatingSheet || !newSheetNameInput.trim()}
-                  className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xs disabled:opacity-50 cursor-pointer"
-                >
-                  {isCreatingSheet ? 'Creating...' : 'Create Worksheet'}
-                </button>
-              </div>
-            </form>
+      {/* 5. Worksheet Tab Context Menu (Right-Click) */}
+      {tabContextMenu && (
+        <div
+          className="fixed z-50 bg-white border border-slate-300 rounded-sm shadow-xl py-1 w-36 text-xs text-slate-800"
+          style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-1 font-semibold text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-100 truncate">
+            {tabContextMenu.sheetName}
           </div>
+          <button
+            type="button"
+            onClick={() => handleStartRename(tabContextMenu.sheetName)}
+            className="w-full text-left px-3 py-1.5 hover:bg-slate-100 flex items-center gap-2 cursor-pointer transition"
+          >
+            <span>Rename</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const target = tabContextMenu.sheetName;
+              setTabContextMenu(null);
+              if (sheetKeys.length <= 1) {
+                alert(`Cannot delete the only remaining worksheet in the ${workspace} workspace.`);
+                return;
+              }
+              setPendingDeleteSheet(target);
+            }}
+            disabled={sheetKeys.length <= 1}
+            className="w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-600 disabled:opacity-40 disabled:hover:bg-transparent flex items-center gap-2 cursor-pointer transition border-t border-slate-100"
+          >
+            <span>Delete</span>
+          </button>
         </div>
       )}
+
+      {/* Worksheet Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={pendingDeleteSheet !== null}
+        title="Delete Worksheet"
+        message={
+          pendingDeleteSheet
+            ? `Are you sure you want to delete worksheet "${pendingDeleteSheet}" and all of its records? This action cannot be undone.`
+            : ''
+        }
+        confirmLabel={isDeletingSheet ? 'Deleting...' : 'Delete Worksheet'}
+        confirmVariant="danger"
+        onConfirm={() => {
+          if (pendingDeleteSheet) {
+            void handleDeleteSheet(pendingDeleteSheet);
+          }
+        }}
+        onCancel={() => setPendingDeleteSheet(null)}
+      />
 
       {/* 6. Safeguard Confirmation Modal for Bulk / Row / Column Clear */}
       <ConfirmDialog
