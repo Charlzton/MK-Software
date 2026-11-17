@@ -2,10 +2,16 @@
 
 import React, { useState } from 'react';
 import { User } from '@/lib/types';
+import type { SheetState } from '@/components/ExcelSpreadsheet';
 import { Stethoscope, Users, ShieldAlert, Eye, EyeOff } from 'lucide-react';
 
+export interface LoginPreloadPayload {
+  workspace?: 'reception' | 'doctor';
+  sheets?: Record<string, SheetState>;
+}
+
 interface LoginCardProps {
-  onSuccess: (user: User) => void;
+  onSuccess: (user: User, preload?: LoginPreloadPayload) => void;
   externalError?: string | null;
 }
 
@@ -46,7 +52,14 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
       }
 
       if (data.user) {
-        onSuccess(data.user);
+        const preload: LoginPreloadPayload | undefined =
+          data.initialWorkspace && data.initialWorkbook?.sheets
+            ? {
+                workspace: data.initialWorkspace,
+                sheets: data.initialWorkbook.sheets
+              }
+            : undefined;
+        onSuccess(data.user, preload);
       }
     } catch {
       setError('Unable to reach server. Please check network.');
@@ -58,23 +71,25 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
   const displayedError = error || externalError;
 
   return (
-    <div className="w-full max-w-sm sm:max-w-md mx-auto p-7 sm:p-8 bg-white/45 backdrop-blur-xl border border-white/60 shadow-2xl rounded-2xl text-slate-800 transition-all">
-      {/* Centered Heading */}
-      <h1 className="text-2xl font-bold text-slate-900 text-center mb-6 tracking-tight">
-        Login
+    <div className="w-full max-w-[min(100%,24rem)] sm:max-w-[27rem] lg:max-w-[28rem] mx-auto p-5 sm:p-7 md:p-8 bg-white/20 dark:bg-slate-900/40 backdrop-blur-2xl border border-white/40 dark:border-white/10 shadow-[0_16px_48px_rgba(0,0,0,0.35)] rounded-2xl text-slate-900 dark:text-slate-100 relative overflow-hidden">
+      {/* Glossy top sheen highlight */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/80 to-transparent" />
+
+      <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white text-center tracking-tight mb-4 sm:mb-5">
+        {loginMode === 'admin' ? 'Admin Login' : 'Login'}
       </h1>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} className="space-y-3.5 sm:space-y-4">
         {displayedError && (
-          <div className="p-3 text-xs text-red-700 bg-red-50/90 border border-red-200 rounded-xl flex items-start gap-2.5 shadow-xs">
+          <div className="p-2.5 sm:p-3 text-xs text-red-700 bg-red-50/90 border border-red-200 rounded-xl flex items-start gap-2 shadow-xs">
             <ShieldAlert className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-            <span className="leading-relaxed font-medium">{displayedError}</span>
+            <span className="leading-relaxed font-medium break-words">{displayedError}</span>
           </div>
         )}
 
         {/* Staff Role Selector: Compact horizontal pill-shaped segmented control with sliding active indicator */}
         {loginMode === 'staff' && (
-          <div className="relative flex items-center bg-slate-900/10 p-1 rounded-full border border-white/70 shadow-inner w-[212px] mx-auto">
+          <div className="relative flex items-center bg-slate-900/10 p-1 rounded-full border border-white/70 shadow-inner w-full max-w-[228px] mx-auto">
             {/* Sliding active pill indicator */}
             <div
               className={`absolute top-1 bottom-1 w-[calc(50%-4px)] rounded-full bg-blue-600 shadow-sm transition-transform duration-200 ease-out pointer-events-none ${
@@ -85,7 +100,7 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
             <button
               type="button"
               onClick={() => setStaffRole('doctor')}
-              className={`relative z-10 flex-1 py-1 px-2 text-xs font-semibold rounded-full flex items-center justify-center gap-1 transition-colors duration-150 cursor-pointer ${
+              className={`relative z-10 flex-1 min-h-[34px] sm:min-h-[30px] py-1 px-2 text-xs font-semibold rounded-full flex items-center justify-center gap-1 transition-colors duration-150 cursor-pointer touch-manipulation ${
                 staffRole === 'doctor'
                   ? 'text-white'
                   : 'text-slate-800 hover:text-slate-950'
@@ -98,7 +113,7 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
             <button
               type="button"
               onClick={() => setStaffRole('reception')}
-              className={`relative z-10 flex-1 py-1 px-2 text-xs font-semibold rounded-full flex items-center justify-center gap-1 transition-colors duration-150 cursor-pointer ${
+              className={`relative z-10 flex-1 min-h-[34px] sm:min-h-[30px] py-1 px-2 text-xs font-semibold rounded-full flex items-center justify-center gap-1 transition-colors duration-150 cursor-pointer touch-manipulation ${
                 staffRole === 'reception'
                   ? 'text-white'
                   : 'text-slate-800 hover:text-slate-950'
@@ -123,7 +138,7 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
             disabled={isLoading}
             autoComplete="email"
             required
-            className="w-full px-3.5 py-2.5 text-xs bg-white/70 border border-white/80 rounded-xl text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-hidden focus:border-blue-600 focus:ring-1 focus:ring-blue-600 shadow-xs transition"
+            className="w-full min-h-[44px] sm:min-h-[38px] px-3.5 py-2 text-base sm:text-xs bg-white/75 border border-white/80 rounded-xl text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-hidden focus:border-blue-600 focus:ring-1 focus:ring-blue-600 shadow-xs transition"
           />
         </div>
 
@@ -141,12 +156,12 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
               disabled={isLoading}
               autoComplete="current-password"
               required
-              className="w-full pl-3.5 pr-10 py-2.5 text-xs bg-white/70 border border-white/80 rounded-xl text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-hidden focus:border-blue-600 focus:ring-1 focus:ring-blue-600 shadow-xs transition"
+              className="w-full min-h-[44px] sm:min-h-[38px] pl-3.5 pr-11 py-2 text-base sm:text-xs bg-white/75 border border-white/80 rounded-xl text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-hidden focus:border-blue-600 focus:ring-1 focus:ring-blue-600 shadow-xs transition"
             />
             <button
               type="button"
               onClick={() => setShowPassword((prev) => !prev)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-900 cursor-pointer p-1 transition"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-900 cursor-pointer min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg transition touch-manipulation"
               title={showPassword ? 'Hide password' : 'Show password'}
               aria-label={showPassword ? 'Hide password' : 'Show password'}
             >
@@ -159,13 +174,13 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full py-2.5 px-4 text-xs font-bold uppercase tracking-wider text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-xl transition disabled:opacity-50 cursor-pointer shadow-md mt-2 flex items-center justify-center"
+          className="w-full min-h-[44px] sm:min-h-[40px] py-2.5 px-4 text-xs font-bold uppercase tracking-wider text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-xl transition disabled:opacity-50 cursor-pointer shadow-md mt-2 flex items-center justify-center touch-manipulation"
         >
           {isLoading ? 'Logging in...' : 'Login'}
         </button>
 
         {/* Understated Text Link with High Readability Contrast */}
-        <div className="text-center pt-2">
+        <div className="text-center pt-1 sm:pt-2">
           {loginMode === 'staff' ? (
             <button
               type="button"
@@ -173,7 +188,7 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
                 setLoginMode('admin');
                 setError(null);
               }}
-              className="text-xs text-slate-900 font-semibold hover:text-blue-700 hover:underline transition cursor-pointer tracking-wide"
+              className="text-xs text-slate-900 font-semibold hover:text-blue-700 hover:underline transition cursor-pointer tracking-wide py-1 px-2 touch-manipulation"
             >
               Login as Admin
             </button>
@@ -184,7 +199,7 @@ export function LoginCard({ onSuccess, externalError }: LoginCardProps) {
                 setLoginMode('staff');
                 setError(null);
               }}
-              className="text-xs text-slate-900 font-semibold hover:text-blue-700 hover:underline transition cursor-pointer tracking-wide"
+              className="text-xs text-slate-900 font-semibold hover:text-blue-700 hover:underline transition cursor-pointer tracking-wide py-1 px-2 touch-manipulation"
             >
               Back to Staff Login
             </button>

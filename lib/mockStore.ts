@@ -8,10 +8,14 @@ import {
   type PatchCellResult,
   type PatchCellsBatchResult,
   type PatchHeaderResult,
+  type SaveSheetLayoutResult,
+  type StructuralColResult,
+  type StructuralRowResult,
   type WorkspaceSheetState,
   type WorkspaceType,
   type WorkspaceWorkbookResult,
   StoreRpcError,
+  normalizeDimensionMap,
   validateWorksheetName
 } from '@/lib/store';
 import { prepareInitialWorkbookImport } from '@/lib/importWorkbook';
@@ -62,7 +66,9 @@ function createSeededState(): MockWorkbookState {
         rows: raw.rows.map((r) => [...r]),
         rowVersions,
         cellVersions,
-        rowUpdatedAt
+        rowUpdatedAt,
+        columnWidths: {},
+        rowHeights: {}
       };
     }
     return sheets;
@@ -242,7 +248,9 @@ export function mockCreateWorkspaceSheet(
     rows: [],
     rowVersions: {},
     cellVersions: {},
-    rowUpdatedAt: {}
+    rowUpdatedAt: {},
+    columnWidths: {},
+    rowHeights: {}
   };
 
   sheetsMap[validated.name] = created;
@@ -497,3 +505,258 @@ export function mockImportInitialWorkbooks(): InitialImportResult {
     totalRows: prepared.expectedCounts.totalRows
   };
 }
+
+export function mockSaveWorkspaceSheetLayout(
+  workspace: WorkspaceType,
+  sheetId: string,
+  columnWidths: Record<number, number>,
+  rowHeights: Record<number, number>
+): SaveSheetLayoutResult {
+  const store = getMockStore();
+  const sheet = findSheetById(store.workbooks[workspace], sheetId);
+  const cleanCols = normalizeDimensionMap(columnWidths, 256, 40, 800);
+  const cleanRows = normalizeDimensionMap(rowHeights, 100000, 24, 600);
+  sheet.columnWidths = cleanCols;
+  sheet.rowHeights = cleanRows;
+  store.lastSavedAt[workspace] = new Date().toISOString();
+  return {
+    sheetId,
+    columnWidths: cleanCols,
+    rowHeights: cleanRows
+  };
+}
+
+export function mockInsertWorkspaceRow(
+  workspace: WorkspaceType,
+  sheetId: string,
+  rowIndex: number
+): StructuralRowResult {
+  const store = getMockStore();
+  const sheet = findSheetById(store.workbooks[workspace], sheetId);
+  if (rowIndex < 0 || rowIndex >= 99999) {
+    throw new StoreRpcError(400, 'BAD_REQUEST', 'rowIndex must be between 0 and 99998.');
+  }
+
+  if (rowIndex < sheet.rows.length) {
+    sheet.rows.splice(rowIndex, 0, []);
+  }
+
+  const nextRowVersions: Record<number, number> = {};
+  for (const [k, v] of Object.entries(sheet.rowVersions)) {
+    const idx = Number(k);
+    nextRowVersions[idx >= rowIndex ? idx + 1 : idx] = v;
+  }
+  sheet.rowVersions = nextRowVersions;
+
+  const nextCellVersions: Record<number, Record<number, number>> = {};
+  for (const [k, v] of Object.entries(sheet.cellVersions)) {
+    const idx = Number(k);
+    nextCellVersions[idx >= rowIndex ? idx + 1 : idx] = v;
+  }
+  sheet.cellVersions = nextCellVersions;
+
+  if (sheet.rowUpdatedAt) {
+    const nextUpdatedAt: Record<number, string> = {};
+    for (const [k, v] of Object.entries(sheet.rowUpdatedAt)) {
+      const idx = Number(k);
+      nextUpdatedAt[idx >= rowIndex ? idx + 1 : idx] = v;
+    }
+    sheet.rowUpdatedAt = nextUpdatedAt;
+  }
+
+  const gridTarget = rowIndex + 1;
+  const nextRowHeights: Record<number, number> = {};
+  for (const [k, v] of Object.entries(sheet.rowHeights || {})) {
+    const idx = Number(k);
+    if (idx >= gridTarget) {
+      if (idx + 1 < 100000) nextRowHeights[idx + 1] = v;
+    } else {
+      nextRowHeights[idx] = v;
+    }
+  }
+  sheet.rowHeights = nextRowHeights;
+  store.lastSavedAt[workspace] = new Date().toISOString();
+
+  return {
+    sheetId,
+    rowHeights: { ...nextRowHeights }
+  };
+}
+
+export function mockDeleteWorkspaceRow(
+  workspace: WorkspaceType,
+  sheetId: string,
+  startRowIndex: number,
+  endRowIndex: number
+): StructuralRowResult {
+  const store = getMockStore();
+  const sheet = findSheetById(store.workbooks[workspace], sheetId);
+  if (startRowIndex < 0 || endRowIndex < startRowIndex || endRowIndex >= 100000) {
+    throw new StoreRpcError(400, 'BAD_REQUEST', 'Invalid row deletion range.');
+  }
+
+  const deleteCount = endRowIndex - startRowIndex + 1;
+  if (startRowIndex < sheet.rows.length) {
+    sheet.rows.splice(startRowIndex, Math.min(deleteCount, sheet.rows.length - startRowIndex));
+  }
+
+  const nextRowVersions: Record<number, number> = {};
+  for (const [k, v] of Object.entries(sheet.rowVersions)) {
+    const idx = Number(k);
+    if (idx < startRowIndex) nextRowVersions[idx] = v;
+    else if (idx > endRowIndex) nextRowVersions[idx - deleteCount] = v;
+  }
+  sheet.rowVersions = nextRowVersions;
+
+  const nextCellVersions: Record<number, Record<number, number>> = {};
+  for (const [k, v] of Object.entries(sheet.cellVersions)) {
+    const idx = Number(k);
+    if (idx < startRowIndex) nextCellVersions[idx] = v;
+    else if (idx > endRowIndex) nextCellVersions[idx - deleteCount] = v;
+  }
+  sheet.cellVersions = nextCellVersions;
+
+  if (sheet.rowUpdatedAt) {
+    const nextUpdatedAt: Record<number, string> = {};
+    for (const [k, v] of Object.entries(sheet.rowUpdatedAt)) {
+      const idx = Number(k);
+      if (idx < startRowIndex) nextUpdatedAt[idx] = v;
+      else if (idx > endRowIndex) nextUpdatedAt[idx - deleteCount] = v;
+    }
+    sheet.rowUpdatedAt = nextUpdatedAt;
+  }
+
+  const gridStart = startRowIndex + 1;
+  const gridEnd = endRowIndex + 1;
+  const nextRowHeights: Record<number, number> = {};
+  for (const [k, v] of Object.entries(sheet.rowHeights || {})) {
+    const idx = Number(k);
+    if (idx < gridStart) nextRowHeights[idx] = v;
+    else if (idx > gridEnd) nextRowHeights[idx - deleteCount] = v;
+  }
+  sheet.rowHeights = nextRowHeights;
+  store.lastSavedAt[workspace] = new Date().toISOString();
+
+  return {
+    sheetId,
+    rowHeights: { ...nextRowHeights }
+  };
+}
+
+export function mockInsertWorkspaceColumn(
+  workspace: WorkspaceType,
+  sheetId: string,
+  colIndex: number
+): StructuralColResult {
+  const store = getMockStore();
+  const sheet = findSheetById(store.workbooks[workspace], sheetId);
+  if (colIndex < 0 || colIndex >= 255) {
+    throw new StoreRpcError(400, 'BAD_REQUEST', 'colIndex must be between 0 and 254.');
+  }
+  if (sheet.headers.length >= 256) {
+    throw new StoreRpcError(400, 'BAD_REQUEST', 'Maximum column limit (256) reached.');
+  }
+
+  while (sheet.headers.length < colIndex) {
+    sheet.headers.push('');
+  }
+  sheet.headers.splice(colIndex, 0, '');
+  sheet.headerVersion += 1;
+
+  for (let r = 0; r < sheet.rows.length; r++) {
+    const row = sheet.rows[r];
+    if (Array.isArray(row) && row.length > colIndex) {
+      row.splice(colIndex, 0, '');
+      if (row.length > 256) row.length = 256;
+    }
+    const cv = sheet.cellVersions[r];
+    if (cv) {
+      const nextCv: Record<number, number> = {};
+      for (const [k, v] of Object.entries(cv)) {
+        const c = Number(k);
+        if (c >= colIndex) {
+          if (c + 1 < 256) nextCv[c + 1] = v;
+        } else {
+          nextCv[c] = v;
+        }
+      }
+      sheet.cellVersions[r] = nextCv;
+    }
+    sheet.rowVersions[r] = (sheet.rowVersions[r] ?? 0) + 1;
+  }
+
+  const nextWidths: Record<number, number> = {};
+  for (const [k, v] of Object.entries(sheet.columnWidths || {})) {
+    const idx = Number(k);
+    if (idx >= colIndex) {
+      if (idx + 1 < 256) nextWidths[idx + 1] = v;
+    } else {
+      nextWidths[idx] = v;
+    }
+  }
+  sheet.columnWidths = nextWidths;
+  store.lastSavedAt[workspace] = new Date().toISOString();
+
+  return {
+    sheetId,
+    headers: [...sheet.headers],
+    headerVersion: sheet.headerVersion,
+    columnWidths: { ...nextWidths }
+  };
+}
+
+export function mockDeleteWorkspaceColumn(
+  workspace: WorkspaceType,
+  sheetId: string,
+  colIndex: number
+): StructuralColResult {
+  const store = getMockStore();
+  const sheet = findSheetById(store.workbooks[workspace], sheetId);
+  if (colIndex < 0 || colIndex >= 256) {
+    throw new StoreRpcError(400, 'BAD_REQUEST', 'colIndex must be between 0 and 255.');
+  }
+  if (sheet.headers.length <= 1 && colIndex === 0) {
+    throw new StoreRpcError(400, 'BAD_REQUEST', 'Cannot delete the only remaining column header.');
+  }
+
+  if (colIndex < sheet.headers.length) {
+    sheet.headers.splice(colIndex, 1);
+  }
+  sheet.headerVersion += 1;
+
+  for (let r = 0; r < sheet.rows.length; r++) {
+    const row = sheet.rows[r];
+    if (Array.isArray(row) && row.length > colIndex) {
+      row.splice(colIndex, 1);
+    }
+    const cv = sheet.cellVersions[r];
+    if (cv) {
+      const nextCv: Record<number, number> = {};
+      for (const [k, v] of Object.entries(cv)) {
+        const c = Number(k);
+        if (c < colIndex) nextCv[c] = v;
+        else if (c > colIndex) nextCv[c - 1] = v;
+      }
+      sheet.cellVersions[r] = nextCv;
+    }
+    sheet.rowVersions[r] = (sheet.rowVersions[r] ?? 0) + 1;
+  }
+
+  const nextWidths: Record<number, number> = {};
+  for (const [k, v] of Object.entries(sheet.columnWidths || {})) {
+    const idx = Number(k);
+    if (idx < colIndex) nextWidths[idx] = v;
+    else if (idx > colIndex) nextWidths[idx - 1] = v;
+  }
+  sheet.columnWidths = nextWidths;
+  store.lastSavedAt[workspace] = new Date().toISOString();
+
+  return {
+    sheetId,
+    headers: [...sheet.headers],
+    headerVersion: sheet.headerVersion,
+    columnWidths: { ...nextWidths }
+  };
+}
+
+

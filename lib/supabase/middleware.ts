@@ -24,7 +24,7 @@ export async function updateSession(request: NextRequest) {
   });
 
   const pathname = request.nextUrl.pathname;
-  if (pathname === '/api/auth/login' || pathname === '/api/auth/logout') {
+  if (pathname.startsWith('/api/')) {
     return supabaseResponse;
   }
 

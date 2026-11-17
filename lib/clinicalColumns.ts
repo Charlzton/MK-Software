@@ -28,13 +28,14 @@ const MEDICATION_DRUG_NAMES = new Set([
 ]);
 
 const COMPACT_OPTICAL_HEADERS = new Set([
-  'eye',
-  'va-rx',
   'va+orx',
+  'va+nrx'
+]);
+
+const COMPACT_SPHERICAL_METRIC_HEADERS = new Set([
   'sph',
   'cyl',
   'axis',
-  'va+nrx',
   'add',
   'pd',
   'unaided od',
@@ -48,10 +49,7 @@ const COMPACT_OPTICAL_HEADERS = new Set([
   'sup',
   'nas',
   'inf',
-  'temp'
-]);
-
-const COMPACT_CLINICAL_METRIC_HEADERS = new Set([
+  'temp',
   'cdr',
   'iop',
   'md',
@@ -69,10 +67,11 @@ const COMPACT_CLINICAL_METRIC_HEADERS = new Set([
 ]);
 
 /**
- * Deliberate content-proportional column sizing & clinical categorization:
+ * Deliberate content-proportional column sizing & alignment without coloured category fills:
  * - Reception maintains its existing orderly proportions.
- * - Doctor uses 5 balanced width tiers (76 / 96 / 116 / 156 / 216 px) so Lens Rx
- *   and sibling clinical sheets eliminate erratic undersized/oversized jumps.
+ * - Doctor sizes each column based on actual clinical data shape (ensuring Eye & VA-Rx
+ *   keep values like "LE 6/9", "RE 6/20", "RE CF1M" crisp and unclipped, while narrative
+ *   and exam findings wrap comfortably without collapsing rows or bloating metrics).
  */
 export function getColumnVisualMeta(
   workspace: 'reception' | 'doctor',
@@ -83,7 +82,7 @@ export function getColumnVisualMeta(
   const h = (rawHeader ?? '').trim().toLowerCase();
   const sheetLower = (sheetName ?? '').trim().toLowerCase();
 
-  // Reception workspace: preserve orderly spreadsheet proportions
+  // Reception workspace: preserve existing orderly proportions
   if (workspace === 'reception') {
     if (h === 'name' || h === "patient's name") {
       return { category: 'normal', align: 'left', defaultWidth: 196 };
@@ -120,28 +119,32 @@ export function getColumnVisualMeta(
   // Doctor workspace special sheet layouts
   if (sheetLower === 'dm, hpt') {
     if (colIndex === 1) {
-      return { category: 'medication_treatment', align: 'left', defaultWidth: 248 };
+      return { category: 'normal', align: 'left', defaultWidth: 256 };
     }
     return { category: 'normal', align: 'left', defaultWidth: 96 };
   }
 
   if (sheetLower === 'sheet1') {
     if (colIndex === 0 || h === 'services') {
-      return { category: 'normal', align: 'left', defaultWidth: 236 };
+      return { category: 'normal', align: 'left', defaultWidth: 240 };
     }
     if (colIndex === 1 || h.includes('price')) {
-      return { category: 'normal', align: 'right', defaultWidth: 116 };
+      return { category: 'normal', align: 'right', defaultWidth: 120 };
     }
+  }
+
+  if (sheetLower === 'medications' && colIndex === 0 && h === '') {
+    return { category: 'normal', align: 'left', defaultWidth: 208 };
   }
 
   // Lens Rx col 0 has whitespace header "  " containing consultation Dates
   if (sheetLower === 'lens rx' && colIndex === 0 && h === '') {
-    return { category: 'normal', align: 'center', defaultWidth: 108 };
+    return { category: 'normal', align: 'center', defaultWidth: 112 };
   }
 
-  // Blank spacer / unnamed trailing columns should not inflate to full data width
+  // Truly blank spacer / unnamed trailing columns
   if (h === '') {
-    return { category: 'normal', align: 'left', defaultWidth: 80 };
+    return { category: 'normal', align: 'left', defaultWidth: 84 };
   }
 
   // 1. Patient Identification fields
@@ -152,7 +155,7 @@ export function getColumnVisualMeta(
     h === 'other name' ||
     h === 'other name(s)'
   ) {
-    return { category: 'patient_id', align: 'left', defaultWidth: 180 };
+    return { category: 'normal', align: 'left', defaultWidth: 196 };
   }
   if (
     h === 'patient no.' ||
@@ -161,7 +164,7 @@ export function getColumnVisualMeta(
     h === 'phone no' ||
     h === 'contact'
   ) {
-    return { category: 'patient_id', align: 'center', defaultWidth: 122 };
+    return { category: 'normal', align: 'center', defaultWidth: 128 };
   }
   if (
     h === 'tin' ||
@@ -172,10 +175,10 @@ export function getColumnVisualMeta(
     h === 'dvla invoice #' ||
     h === 'licence number'
   ) {
-    return { category: 'patient_id', align: 'center', defaultWidth: 144 };
+    return { category: 'normal', align: 'center', defaultWidth: 148 };
   }
   if (h === 'date of birth') {
-    return { category: 'patient_id', align: 'center', defaultWidth: 114 };
+    return { category: 'normal', align: 'center', defaultWidth: 118 };
   }
   if (
     h === 'residence' ||
@@ -186,66 +189,68 @@ export function getColumnVisualMeta(
     h === 'know your client' ||
     h === 'driving school'
   ) {
-    return { category: 'patient_id', align: 'left', defaultWidth: 160 };
+    return { category: 'normal', align: 'left', defaultWidth: 168 };
   }
 
-  // 2. Eye Prescription & Lens Rx fields (consistent compact optical tier)
+  // 2. Eye & Visual Acuity / Prescription fields (wide enough for RE 6/20, LE 6/9, RE CF1M)
+  if (h === 'eye' || h === 'va-rx') {
+    return { category: 'normal', align: 'center', defaultWidth: 116 };
+  }
   if (COMPACT_OPTICAL_HEADERS.has(h)) {
-    return {
-      category: 'prescription',
-      align: 'center',
-      defaultWidth: 96
-    };
+    return { category: 'normal', align: 'center', defaultWidth: 108 };
+  }
+  if (COMPACT_SPHERICAL_METRIC_HEADERS.has(h)) {
+    return { category: 'normal', align: 'center', defaultWidth: 96 };
   }
   if (h === 'lensmetry/auto ref' || h === 'refraction result') {
-    return { category: 'prescription', align: 'left', defaultWidth: 160 };
+    return { category: 'normal', align: 'left', defaultWidth: 172 };
   }
   if (h === 'lens type' || h === 'lens treatment') {
-    return { category: 'prescription', align: 'left', defaultWidth: 126 };
+    return { category: 'normal', align: 'left', defaultWidth: 136 };
   }
 
   // 3. Surgery-related fields
   if (h.includes('post-op')) {
-    return { category: 'surgery', align: 'left', defaultWidth: 216 };
+    return { category: 'normal', align: 'left', defaultWidth: 224 };
   }
   if (h === 'surgery type') {
-    return { category: 'surgery', align: 'left', defaultWidth: 160 };
+    return { category: 'normal', align: 'left', defaultWidth: 168 };
   }
   if (h === 'booking date' || h === 'surgery date') {
-    return { category: 'surgery', align: 'center', defaultWidth: 114 };
+    return { category: 'normal', align: 'center', defaultWidth: 116 };
   }
   if (h === 'payment mode' || h === 'venue') {
-    return { category: 'surgery', align: 'left', defaultWidth: 126 };
+    return { category: 'normal', align: 'left', defaultWidth: 132 };
   }
   if (sheetLower === 'surgery' && h === 'comments') {
-    return { category: 'surgery', align: 'left', defaultWidth: 200 };
+    return { category: 'normal', align: 'left', defaultWidth: 204 };
   }
 
   // 4. Medication & Treatment fields
   if (h === 'eye drop' || h === 'remarks + medications' || h === 'medication') {
-    return { category: 'medication_treatment', align: 'left', defaultWidth: 216 };
+    return { category: 'normal', align: 'left', defaultWidth: 228 };
   }
-  if (h === 'function' || h === 'dosage') {
-    return { category: 'medication_treatment', align: 'left', defaultWidth: 196 };
+  if (h === 'function') {
+    return { category: 'normal', align: 'left', defaultWidth: 208 };
+  }
+  if (h === 'dosage') {
+    return { category: 'normal', align: 'left', defaultWidth: 164 };
   }
   if (h === 'trade name') {
-    return { category: 'medication_treatment', align: 'left', defaultWidth: 156 };
+    return { category: 'normal', align: 'left', defaultWidth: 168 };
   }
-  if (h === 'type' || h === 'availability') {
-    return { category: 'medication_treatment', align: 'center', defaultWidth: 96 };
-  }
-  if (MEDICATION_DRUG_NAMES.has(h)) {
-    return { category: 'medication_treatment', align: 'center', defaultWidth: 96 };
+  if (h === 'type' || h === 'availability' || MEDICATION_DRUG_NAMES.has(h)) {
+    return { category: 'normal', align: 'center', defaultWidth: 96 };
   }
 
-  // 5. Clinical Findings & Important Exam Results
+  // 5. Clinical Narratives & Exam Findings
   if (
     h === 'chief complaint' ||
     h === 'diagnosis' ||
     h === 'glaucoma hemifield test (ght)' ||
     h === 'pathological remarks'
   ) {
-    return { category: 'clinical_finding', align: 'left', defaultWidth: 216 };
+    return { category: 'normal', align: 'left', defaultWidth: 228 };
   }
   if (
     h === 'medical hx' ||
@@ -255,36 +260,31 @@ export function getColumnVisualMeta(
     h === 'result conclusion' ||
     h === 'final results'
   ) {
-    return { category: 'clinical_finding', align: 'left', defaultWidth: 148 };
+    return { category: 'normal', align: 'left', defaultWidth: 168 };
   }
-  if (
-    h === 'eyelid' ||
-    h === 'conj/sclera' ||
-    h === 'cornea' ||
-    h === 'pupil' ||
-    h === 'lens' ||
-    h === 'vitreous' ||
-    h === 'fundus'
-  ) {
-    return { category: 'clinical_finding', align: 'left', defaultWidth: 116 };
+  if (h === 'conj/sclera' || h === 'fundus') {
+    return { category: 'normal', align: 'left', defaultWidth: 184 };
   }
-  if (COMPACT_CLINICAL_METRIC_HEADERS.has(h)) {
-    return { category: 'clinical_finding', align: 'center', defaultWidth: 96 };
+  if (h === 'eyelid' || h === 'lens') {
+    return { category: 'normal', align: 'left', defaultWidth: 136 };
+  }
+  if (h === 'cornea' || h === 'pupil' || h === 'vitreous') {
+    return { category: 'normal', align: 'left', defaultWidth: 112 };
   }
 
   // 6. Standard dates, targets & auxiliary fields
   if (h === 'date' || h === 'oct-date' || h === 'time' || h === 'mar') {
-    return { category: 'normal', align: 'center', defaultWidth: 108 };
-  }
-  if (h.includes('target')) {
     return { category: 'normal', align: 'center', defaultWidth: 112 };
   }
+  if (h.includes('target')) {
+    return { category: 'normal', align: 'center', defaultWidth: 116 };
+  }
   if (h === 'doctor' || h === 'review' || h === 'remarks' || h === 'service type' || h === 'type/place') {
-    return { category: 'normal', align: 'left', defaultWidth: 132 };
+    return { category: 'normal', align: 'left', defaultWidth: 136 };
   }
   if (h === 'sms') {
-    return { category: 'normal', align: 'center', defaultWidth: 80 };
+    return { category: 'normal', align: 'center', defaultWidth: 84 };
   }
 
-  return { category: 'normal', align: 'left', defaultWidth: 112 };
+  return { category: 'normal', align: 'left', defaultWidth: 116 };
 }

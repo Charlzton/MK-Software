@@ -10,7 +10,12 @@ import {
   mockPatchWorkspaceCellsBatch,
   mockPatchWorkspaceHeader,
   mockRenameWorkspaceSheet,
-  mockReorderWorkspaceSheets
+  mockReorderWorkspaceSheets,
+  mockSaveWorkspaceSheetLayout,
+  mockInsertWorkspaceRow,
+  mockDeleteWorkspaceRow,
+  mockInsertWorkspaceColumn,
+  mockDeleteWorkspaceColumn
 } from '@/lib/mockStore';
 import { verifyActiveStaff } from '@/lib/auth';
 import {
@@ -19,13 +24,19 @@ import {
   StoreRpcError,
   canRoleAccessWorkspace,
   loadWorkspaceWorkbook,
+  normalizeDimensionMap,
   createWorkspaceSheetRpc,
   renameWorkspaceSheetRpc,
   deleteWorkspaceSheetRpc,
   reorderWorkspaceSheetsRpc,
   patchWorkspaceCellRpc,
   patchWorkspaceCellsBatchRpc,
-  patchWorkspaceHeaderRpc
+  patchWorkspaceHeaderRpc,
+  saveWorkspaceSheetLayoutRpc,
+  insertWorkspaceRowRpc,
+  deleteWorkspaceRowRpc,
+  insertWorkspaceColumnRpc,
+  deleteWorkspaceColumnRpc
 } from '@/lib/store';
 
 function isValidWorkspace(val: unknown): val is WorkspaceType {
@@ -399,10 +410,138 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // 8. Save worksheet layout (column widths & row heights)
+    if (action === 'save_sheet_layout') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+
+      if (
+        body.columnWidths !== undefined &&
+        (typeof body.columnWidths !== 'object' || body.columnWidths === null || Array.isArray(body.columnWidths))
+      ) {
+        return NextResponse.json({ error: 'columnWidths must be an object map.' }, { status: 400 });
+      }
+      if (
+        body.rowHeights !== undefined &&
+        (typeof body.rowHeights !== 'object' || body.rowHeights === null || Array.isArray(body.rowHeights))
+      ) {
+        return NextResponse.json({ error: 'rowHeights must be an object map.' }, { status: 400 });
+      }
+
+      const cleanCols = normalizeDimensionMap(body.columnWidths ?? {}, 256, 40, 800);
+      const cleanRows = normalizeDimensionMap(body.rowHeights ?? {}, 100000, 24, 600);
+
+      const result = useMock
+        ? mockSaveWorkspaceSheetLayout(workspaceParam, sheetId, cleanCols, cleanRows)
+        : await saveWorkspaceSheetLayoutRpc(supabase!, workspaceParam, sheetId, cleanCols, cleanRows);
+
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
+    // 9. Insert empty data row (shifts existing rows >= rowIndex down)
+    if (action === 'insert_row') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      const rowIndex = body.rowIndex;
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+      if (!isNonNegativeInt(rowIndex) || rowIndex >= 99999) {
+        return NextResponse.json({ error: 'rowIndex must be an integer between 0 and 99998.' }, { status: 400 });
+      }
+
+      const result = useMock
+        ? mockInsertWorkspaceRow(workspaceParam, sheetId, rowIndex)
+        : await insertWorkspaceRowRpc(supabase!, workspaceParam, sheetId, rowIndex);
+
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
+    // 10. Delete data row(s) range (shifts remaining rows up)
+    if (action === 'delete_rows') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      const startRowIndex = body.startRowIndex;
+      const endRowIndex = body.endRowIndex ?? startRowIndex;
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+      if (
+        !isNonNegativeInt(startRowIndex) ||
+        !isNonNegativeInt(endRowIndex) ||
+        endRowIndex < startRowIndex ||
+        endRowIndex >= 100000
+      ) {
+        return NextResponse.json({ error: 'Invalid row deletion range.' }, { status: 400 });
+      }
+
+      const result = useMock
+        ? mockDeleteWorkspaceRow(workspaceParam, sheetId, startRowIndex, endRowIndex)
+        : await deleteWorkspaceRowRpc(supabase!, workspaceParam, sheetId, startRowIndex, endRowIndex);
+
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
+    // 11. Insert blank column at colIndex (shifts headers, rows, cell_versions, widths)
+    if (action === 'insert_column') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      const colIndex = body.colIndex;
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+      if (!isNonNegativeInt(colIndex) || colIndex >= 255) {
+        return NextResponse.json({ error: 'colIndex must be an integer between 0 and 254.' }, { status: 400 });
+      }
+
+      const result = useMock
+        ? mockInsertWorkspaceColumn(workspaceParam, sheetId, colIndex)
+        : await insertWorkspaceColumnRpc(supabase!, workspaceParam, sheetId, colIndex);
+
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
+    // 12. Delete column at colIndex (shifts headers, rows, cell_versions, widths)
+    if (action === 'delete_column') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      const colIndex = body.colIndex;
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+      if (!isNonNegativeInt(colIndex) || colIndex >= 256) {
+        return NextResponse.json({ error: 'colIndex must be an integer between 0 and 255.' }, { status: 400 });
+      }
+
+      const result = useMock
+        ? mockDeleteWorkspaceColumn(workspaceParam, sheetId, colIndex)
+        : await deleteWorkspaceColumnRpc(supabase!, workspaceParam, sheetId, colIndex);
+
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
     return NextResponse.json(
       {
         error:
-          'Invalid or unsupported action. Supported actions: create_sheet, rename_sheet, delete_sheet, reorder_sheets, patch_cell, patch_cells_batch, patch_header.'
+          'Invalid or unsupported action. Supported actions: create_sheet, rename_sheet, delete_sheet, reorder_sheets, patch_cell, patch_cells_batch, patch_header, save_sheet_layout, insert_row, delete_rows, insert_column, delete_column.'
       },
       { status: 400 }
     );

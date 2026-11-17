@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { isSupabaseConfigured } from '@/lib/supabase/config';
-import { buildMockStaffUser, setMockSessionCookie } from '@/lib/mockStore';
-import { verifyActiveStaff } from '@/lib/auth';
+import { buildMockStaffUser, mockLoadWorkspaceWorkbook, setMockSessionCookie } from '@/lib/mockStore';
+import { verifyStaffProfileForAuthUser } from '@/lib/auth';
+import { loadWorkspaceWorkbook, type WorkspaceType } from '@/lib/store';
 import type { UserRole } from '@/lib/types';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -47,10 +48,18 @@ export async function POST(req: NextRequest) {
 
     if (!isSupabaseConfigured()) {
       const mockUser = buildMockStaffUser(email, requestedRole);
+      const initialWorkspace: WorkspaceType = mockUser.role === 'doctor' ? 'doctor' : 'reception';
+      const initialWorkbook = mockLoadWorkspaceWorkbook(initialWorkspace);
       const res = NextResponse.json(
         {
           authenticated: true,
-          user: mockUser
+          user: mockUser,
+          initialWorkspace,
+          initialWorkbook: {
+            sheets: initialWorkbook.sheets,
+            sheetNames: initialWorkbook.sheetNames,
+            lastSavedAt: initialWorkbook.lastSavedAt
+          }
         },
         {
           headers: {
@@ -64,7 +73,7 @@ export async function POST(req: NextRequest) {
 
     const supabase = await createClient();
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
       email,
       password
     });
@@ -76,7 +85,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const verification = await verifyActiveStaff(supabase);
+    const verification = await verifyStaffProfileForAuthUser(supabase, signInData.user);
 
     if (verification.status === 'unauthorized') {
       await supabase.auth.signOut();
@@ -115,10 +124,31 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Preload the landing workspace immediately so the spreadsheet renders without an extra client waterfall
+    const initialWorkspace: WorkspaceType = actualRole === 'doctor' ? 'doctor' : 'reception';
+    let initialWorkbookPayload: {
+      sheets: Awaited<ReturnType<typeof loadWorkspaceWorkbook>>['sheets'];
+      sheetNames: string[];
+      lastSavedAt: string | null;
+    } | null = null;
+
+    try {
+      const wb = await loadWorkspaceWorkbook(supabase, initialWorkspace);
+      initialWorkbookPayload = {
+        sheets: wb.sheets,
+        sheetNames: wb.sheetNames,
+        lastSavedAt: wb.lastSavedAt
+      };
+    } catch {
+      // Non-fatal: client will fetch workspace explicitly if preload fails
+    }
+
     return NextResponse.json(
       {
         authenticated: true,
-        user: verification.user
+        user: verification.user,
+        initialWorkspace,
+        ...(initialWorkbookPayload ? { initialWorkbook: initialWorkbookPayload } : {})
       },
       {
         headers: {

@@ -1,4 +1,4 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient, User as SupabaseAuthUser } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/server';
 import type { User, UserRole } from '@/lib/types';
 
@@ -30,20 +30,14 @@ function isValidStaffRole(role: unknown): role is UserRole {
 }
 
 /**
- * Verifies the current Supabase Auth session user against public.staff_profiles.
- * Rejects and signs out any account without an active, role-valid staff profile.
+ * Verifies an already-resolved Supabase Auth user against public.staff_profiles.
+ * Avoids duplicate auth.getUser() round-trips on login when signInWithPassword returns the user.
  */
-export async function verifyActiveStaff(
-  supabaseClient?: SupabaseClient
+export async function verifyStaffProfileForAuthUser(
+  supabase: SupabaseClient,
+  authUser: SupabaseAuthUser | null | undefined
 ): Promise<StaffVerificationResult> {
-  const supabase = supabaseClient ?? (await createClient());
-
-  const {
-    data: { user: authUser },
-    error: authError
-  } = await supabase.auth.getUser();
-
-  if (authError || !authUser) {
+  if (!authUser) {
     return { status: 'unauthenticated', user: null };
   }
 
@@ -90,3 +84,23 @@ export async function verifyActiveStaff(
   };
 }
 
+/**
+ * Verifies the current Supabase Auth session user against public.staff_profiles.
+ * Rejects and signs out any account without an active, role-valid staff profile.
+ */
+export async function verifyActiveStaff(
+  supabaseClient?: SupabaseClient
+): Promise<StaffVerificationResult> {
+  const supabase = supabaseClient ?? (await createClient());
+
+  const {
+    data: { user: authUser },
+    error: authError
+  } = await supabase.auth.getUser();
+
+  if (authError || !authUser) {
+    return { status: 'unauthenticated', user: null };
+  }
+
+  return verifyStaffProfileForAuthUser(supabase, authUser);
+}

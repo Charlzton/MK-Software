@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { isSupabaseConfigured } from '@/lib/supabase/config';
-import { getMockUserFromRequest } from '@/lib/mockStore';
+import { getMockUserFromRequest, mockLoadWorkspaceWorkbook } from '@/lib/mockStore';
 import { verifyActiveStaff } from '@/lib/auth';
+import { loadWorkspaceWorkbook, type WorkspaceType } from '@/lib/store';
 
 const NO_STORE_HEADERS = {
   'Cache-Control': 'private, no-cache, no-store, must-revalidate, max-age=0'
@@ -10,11 +11,32 @@ const NO_STORE_HEADERS = {
 
 export async function GET(req: NextRequest) {
   try {
+    const includeWorkbook = req.nextUrl.searchParams.get('includeWorkbook') === '1';
+
     if (!isSupabaseConfigured()) {
       const mockUser = getMockUserFromRequest(req);
       if (!mockUser) {
         return NextResponse.json({ authenticated: false }, { status: 401, headers: NO_STORE_HEADERS });
       }
+
+      if (includeWorkbook) {
+        const initialWorkspace: WorkspaceType = mockUser.role === 'doctor' ? 'doctor' : 'reception';
+        const initialWorkbook = mockLoadWorkspaceWorkbook(initialWorkspace);
+        return NextResponse.json(
+          {
+            authenticated: true,
+            user: mockUser,
+            initialWorkspace,
+            initialWorkbook: {
+              sheets: initialWorkbook.sheets,
+              sheetNames: initialWorkbook.sheetNames,
+              lastSavedAt: initialWorkbook.lastSavedAt
+            }
+          },
+          { headers: NO_STORE_HEADERS }
+        );
+      }
+
       return NextResponse.json(
         { authenticated: true, user: mockUser },
         { headers: NO_STORE_HEADERS }
@@ -42,10 +64,33 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    let initialWorkspace: WorkspaceType | undefined;
+    let initialWorkbookPayload: {
+      sheets: Awaited<ReturnType<typeof loadWorkspaceWorkbook>>['sheets'];
+      sheetNames: string[];
+      lastSavedAt: string | null;
+    } | null = null;
+
+    if (includeWorkbook) {
+      initialWorkspace = verification.user.role === 'doctor' ? 'doctor' : 'reception';
+      try {
+        const wb = await loadWorkspaceWorkbook(supabase, initialWorkspace);
+        initialWorkbookPayload = {
+          sheets: wb.sheets,
+          sheetNames: wb.sheetNames,
+          lastSavedAt: wb.lastSavedAt
+        };
+      } catch {
+        // Non-fatal: client falls back to fetching /api/records?workspace=...
+      }
+    }
+
     return NextResponse.json(
       {
         authenticated: true,
-        user: verification.user
+        user: verification.user,
+        ...(initialWorkspace ? { initialWorkspace } : {}),
+        ...(initialWorkbookPayload ? { initialWorkbook: initialWorkbookPayload } : {})
       },
       { headers: NO_STORE_HEADERS }
     );

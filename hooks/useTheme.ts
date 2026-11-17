@@ -4,10 +4,10 @@ import { useEffect, useCallback, useSyncExternalStore } from 'react';
 
 export type ThemeMode = 'light' | 'dark';
 
-const THEME_STORAGE_KEY = 'mk_theme';
+export const THEME_STORAGE_KEY = 'mk_theme';
 const THEME_CHANGE_EVENT = 'mk-theme-change';
 
-function readStoredTheme(): ThemeMode {
+export function readStoredTheme(): ThemeMode {
   if (typeof window === 'undefined') return 'light';
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -17,10 +17,19 @@ function readStoredTheme(): ThemeMode {
   }
 }
 
+export function syncThemeClassToDocument(): ThemeMode {
+  const mode = readStoredTheme();
+  if (typeof document !== 'undefined') {
+    document.documentElement.classList.toggle('dark', mode === 'dark');
+  }
+  return mode;
+}
+
 function subscribeTheme(callback: () => void): () => void {
   if (typeof window === 'undefined') return () => {};
   const handleStorage = (e: StorageEvent) => {
     if (e.key === null || e.key === THEME_STORAGE_KEY) {
+      syncThemeClassToDocument();
       callback();
     }
   };

@@ -14,6 +14,8 @@ export interface WorkspaceSheetState {
   rowVersions: Record<number, number>;
   cellVersions: Record<number, Record<number, number>>;
   rowUpdatedAt?: Record<number, string>;
+  columnWidths?: Record<number, number>;
+  rowHeights?: Record<number, number>;
 }
 
 export interface WorkspaceWorkbookResult {
@@ -103,12 +105,44 @@ function mapRpcError(error: { code?: string; message?: string; details?: string;
 
   if (
     rawCode === 'PGRST202' ||
-    /Could not find the function public\.import_initial_workbooks/i.test(rawMessage)
+    /Could not find the function public\./i.test(rawMessage)
   ) {
+    if (/save_workspace_sheet_layout/i.test(rawMessage)) {
+      return new StoreRpcError(
+        501,
+        'MIGRATION_REQUIRED',
+        'Column width and row height persistence requires running docs/sql/006_sheet_layout_persistence.sql or docs/sql/007_layout_and_structural_ops.sql in Supabase SQL Editor.',
+        rawMessage
+      );
+    }
+    if (/(insert|delete)_workspace_(row|column)/i.test(rawMessage)) {
+      return new StoreRpcError(
+        501,
+        'MIGRATION_REQUIRED',
+        'Row and column structural operations require running docs/sql/007_layout_and_structural_ops.sql in Supabase SQL Editor.',
+        rawMessage
+      );
+    }
+    if (/(rename|delete|reorder)_workspace_sheet/i.test(rawMessage)) {
+      return new StoreRpcError(
+        501,
+        'MIGRATION_REQUIRED',
+        'Worksheet management requires running docs/sql/005_fix_worksheet_management.sql in Supabase SQL Editor.',
+        rawMessage
+      );
+    }
+    if (/import_initial_workbooks/i.test(rawMessage)) {
+      return new StoreRpcError(
+        501,
+        'MIGRATION_REQUIRED',
+        'Database RPC import_initial_workbooks is not installed yet. Run the SQL migration docs/sql/002_initial_workbook_import.sql in Supabase SQL Editor first.',
+        rawMessage
+      );
+    }
     return new StoreRpcError(
       501,
       'MIGRATION_REQUIRED',
-      'Database RPC import_initial_workbooks is not installed yet. Run the SQL migration docs/sql/002_initial_workbook_import.sql in Supabase SQL Editor first.',
+      `Required database function is not registered in Supabase schema cache: ${rawMessage}`,
       rawMessage
     );
   }
@@ -168,6 +202,32 @@ function normalizeCellVersionsMap(raw: unknown): Record<number, number> {
   return result;
 }
 
+export function normalizeDimensionMap(
+  raw: unknown,
+  maxIndex: number,
+  minSize: number,
+  maxSize: number
+): Record<number, number> {
+  const result: Record<number, number> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    const idx = Number(key);
+    const size = Number(val);
+    if (
+      Number.isInteger(idx) &&
+      idx >= 0 &&
+      idx < maxIndex &&
+      Number.isFinite(size) &&
+      size >= minSize &&
+      size <= maxSize
+    ) {
+      result[idx] = Math.round(size);
+    }
+  }
+  return result;
+}
+
 interface RawRowRecord {
   row_index?: unknown;
   rowIndex?: unknown;
@@ -195,6 +255,10 @@ interface RawSheetRecord {
   rows?: unknown;
   updated_at?: unknown;
   updatedAt?: unknown;
+  column_widths?: unknown;
+  columnWidths?: unknown;
+  row_heights?: unknown;
+  rowHeights?: unknown;
 }
 
 function normalizeSheetRecord(rawSheet: RawSheetRecord, fallbackName: string, fallbackOrder: number): WorkspaceSheetState {
@@ -270,6 +334,19 @@ function normalizeSheetRecord(rawSheet: RawSheetRecord, fallbackName: string, fa
     }
   }
 
+  const columnWidths = normalizeDimensionMap(
+    rawSheet.column_widths ?? rawSheet.columnWidths,
+    256,
+    40,
+    800
+  );
+  const rowHeights = normalizeDimensionMap(
+    rawSheet.row_heights ?? rawSheet.rowHeights,
+    100000,
+    24,
+    600
+  );
+
   return {
     id,
     name,
@@ -280,7 +357,9 @@ function normalizeSheetRecord(rawSheet: RawSheetRecord, fallbackName: string, fa
     rows,
     rowVersions,
     cellVersions,
-    rowUpdatedAt
+    rowUpdatedAt,
+    columnWidths,
+    rowHeights
   };
 }
 
@@ -288,12 +367,38 @@ export async function loadWorkspaceWorkbook(
   supabase: SupabaseClient,
   workspace: WorkspaceType
 ): Promise<WorkspaceWorkbookResult> {
-  const { data, error } = await supabase.rpc('get_workspace_workbook', {
-    p_workspace: workspace
-  });
+  const [rpcRes, layoutRes] = await Promise.all([
+    supabase.rpc('get_workspace_workbook', {
+      p_workspace: workspace
+    }),
+    supabase
+      .from('workbook_sheets')
+      .select('id, column_widths, row_heights')
+      .eq('workspace', workspace)
+  ]);
 
-  if (error) {
-    throw mapRpcError(error);
+  if (rpcRes.error) {
+    throw mapRpcError(rpcRes.error);
+  }
+
+  const data = rpcRes.data;
+  const layoutById = new Map<
+    string,
+    { columnWidths: Record<number, number>; rowHeights: Record<number, number> }
+  >();
+  if (!layoutRes.error && Array.isArray(layoutRes.data)) {
+    for (const row of layoutRes.data as Array<{
+      id?: unknown;
+      column_widths?: unknown;
+      row_heights?: unknown;
+    }>) {
+      if (row && typeof row.id === 'string') {
+        layoutById.set(row.id, {
+          columnWidths: normalizeDimensionMap(row.column_widths, 256, 40, 800),
+          rowHeights: normalizeDimensionMap(row.row_heights, 100000, 24, 600)
+        });
+      }
+    }
   }
 
   const normalizedList: WorkspaceSheetState[] = [];
@@ -336,6 +441,11 @@ export async function loadWorkspaceWorkbook(
   const sheets: Record<string, WorkspaceSheetState> = {};
   const sheetNames: string[] = [];
   for (const sheet of normalizedList) {
+    const layout = layoutById.get(sheet.id);
+    if (layout) {
+      sheet.columnWidths = layout.columnWidths;
+      sheet.rowHeights = layout.rowHeights;
+    }
     sheets[sheet.name] = sheet;
     sheetNames.push(sheet.name);
   }
@@ -780,4 +890,199 @@ export async function reorderWorkspaceSheetsRpc(
 
   throw mapRpcError(error);
 }
+
+export interface SaveSheetLayoutResult {
+  sheetId: string;
+  columnWidths: Record<number, number>;
+  rowHeights: Record<number, number>;
+}
+
+export async function saveWorkspaceSheetLayoutRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  columnWidths: Record<number, number>,
+  rowHeights: Record<number, number>
+): Promise<SaveSheetLayoutResult> {
+  const cleanCols = normalizeDimensionMap(columnWidths, 256, 40, 800);
+  const cleanRows = normalizeDimensionMap(rowHeights, 100000, 24, 600);
+  const serializedCols = Object.fromEntries(
+    Object.entries(cleanCols).map(([k, v]) => [String(k), v])
+  );
+  const serializedRows = Object.fromEntries(
+    Object.entries(cleanRows).map(([k, v]) => [String(k), v])
+  );
+
+  const { data, error } = await supabase.rpc('save_workspace_sheet_layout', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_column_widths: serializedCols,
+    p_row_heights: serializedRows
+  });
+
+  if (!error) {
+    const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+    return {
+      sheetId: String(res.sheetId ?? sheetId),
+      columnWidths: normalizeDimensionMap(res.columnWidths ?? cleanCols, 256, 40, 800),
+      rowHeights: normalizeDimensionMap(res.rowHeights ?? cleanRows, 100000, 24, 600)
+    };
+  }
+
+  if (
+    error.code === 'PGRST202' ||
+    error.code === 'PGRST204' ||
+    error.code === '42883' ||
+    error.code === '42703' ||
+    /save_workspace_sheet_layout/i.test(error.message || '')
+  ) {
+    const { data: updateData, error: updateError } = await supabase
+      .from('workbook_sheets')
+      .update({ column_widths: serializedCols, row_heights: serializedRows })
+      .eq('id', sheetId)
+      .eq('workspace', workspace)
+      .select('id, column_widths, row_heights')
+      .maybeSingle();
+
+    if (updateError) {
+      if (
+        updateError.code === '42703' ||
+        updateError.code === 'PGRST204' ||
+        /column_widths|row_heights/i.test(updateError.message || '')
+      ) {
+        throw new StoreRpcError(
+          501,
+          'MIGRATION_REQUIRED',
+          'Column width and row height persistence requires running docs/sql/008_comprehensive_layout_persistence.sql in Supabase SQL Editor.',
+          updateError.message
+        );
+      }
+      throw mapRpcError(updateError);
+    }
+
+    return {
+      sheetId: String(updateData?.id ?? sheetId),
+      columnWidths: normalizeDimensionMap(updateData?.column_widths ?? cleanCols, 256, 40, 800),
+      rowHeights: normalizeDimensionMap(updateData?.row_heights ?? cleanRows, 100000, 24, 600)
+    };
+  }
+
+  throw mapRpcError(error);
+}
+
+export interface StructuralRowResult {
+  sheetId: string;
+  rowHeights: Record<number, number>;
+}
+
+export interface StructuralColResult {
+  sheetId: string;
+  headers: string[];
+  headerVersion: number;
+  columnWidths: Record<number, number>;
+}
+
+export async function insertWorkspaceRowRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  rowIndex: number
+): Promise<StructuralRowResult> {
+  const { data, error } = await supabase.rpc('insert_workspace_row', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_row_index: rowIndex
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  return {
+    sheetId: String(res.sheetId ?? sheetId),
+    rowHeights: normalizeDimensionMap(res.rowHeights ?? {}, 100000, 24, 600)
+  };
+}
+
+export async function deleteWorkspaceRowRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  startRowIndex: number,
+  endRowIndex: number
+): Promise<StructuralRowResult> {
+  const { data, error } = await supabase.rpc('delete_workspace_row', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_start_row_index: startRowIndex,
+    p_end_row_index: endRowIndex
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  return {
+    sheetId: String(res.sheetId ?? sheetId),
+    rowHeights: normalizeDimensionMap(res.rowHeights ?? {}, 100000, 24, 600)
+  };
+}
+
+export async function insertWorkspaceColumnRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  colIndex: number
+): Promise<StructuralColResult> {
+  const { data, error } = await supabase.rpc('insert_workspace_column', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_col_index: colIndex
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  return {
+    sheetId: String(res.sheetId ?? sheetId),
+    headers: Array.isArray(res.headers)
+      ? res.headers.map((h) => (typeof h === 'string' ? h : String(h ?? '')))
+      : [],
+    headerVersion: Number(res.headerVersion ?? 1),
+    columnWidths: normalizeDimensionMap(res.columnWidths ?? {}, 256, 40, 800)
+  };
+}
+
+export async function deleteWorkspaceColumnRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  colIndex: number
+): Promise<StructuralColResult> {
+  const { data, error } = await supabase.rpc('delete_workspace_column', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_col_index: colIndex
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  return {
+    sheetId: String(res.sheetId ?? sheetId),
+    headers: Array.isArray(res.headers)
+      ? res.headers.map((h) => (typeof h === 'string' ? h : String(h ?? '')))
+      : [],
+    headerVersion: Number(res.headerVersion ?? 1),
+    columnWidths: normalizeDimensionMap(res.columnWidths ?? {}, 256, 40, 800)
+  };
+}
+
+
 

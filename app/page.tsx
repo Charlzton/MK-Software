@@ -1,23 +1,26 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { LoginCard } from '@/components/LoginCard';
+import { LoginCard, type LoginPreloadPayload } from '@/components/LoginCard';
 import { ExcelSpreadsheet, SheetState } from '@/components/ExcelSpreadsheet';
 import { createClient as createBrowserSupabaseClient } from '@/lib/supabase/client';
 import { User } from '@/lib/types';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { useTheme } from '@/hooks/useTheme';
+import { syncThemeClassToDocument } from '@/hooks/useTheme';
 
 type WorkspaceKey = 'reception' | 'doctor';
 
 export default function Home() {
-  const { theme, toggleTheme } = useTheme();
+  useEffect(() => {
+    syncThemeClassToDocument();
+  }, []);
   const [user, setUser] = useState<User | null>(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceKey>('reception');
+  const [visitedWorkspaces, setVisitedWorkspaces] = useState<WorkspaceKey[]>([]);
 
-  // Persisted workspace data loaded exclusively from Supabase via /api/records
+  // Persisted workspace data loaded exclusively from Supabase via /api/records (or preloaded on auth)
   const [receptionSheets, setReceptionSheets] = useState<Record<string, SheetState>>({});
   const [doctorSheets, setDoctorSheets] = useState<Record<string, SheetState>>({});
 
@@ -51,7 +54,6 @@ export default function Home() {
     try {
       const client = createBrowserSupabaseClient();
       if (!client) {
-        // Running in local/in-memory mode without Supabase env vars
         return;
       }
     } catch (err) {
@@ -79,6 +81,7 @@ export default function Home() {
         setUser(null);
         setReceptionSheets({});
         setDoctorSheets({});
+        setVisitedWorkspaces([]);
         return;
       }
       const data = await res.json();
@@ -94,8 +97,30 @@ export default function Home() {
     }
   }, []);
 
-  const loadAuthorizedWorkspaces = useCallback(
-    (authenticatedUser: User) => {
+  const hydrateSessionWorkspaces = useCallback(
+    (authenticatedUser: User, preload?: LoginPreloadPayload) => {
+      const landingWorkspace: WorkspaceKey = authenticatedUser.role === 'doctor' ? 'doctor' : 'reception';
+      setActiveWorkspace(landingWorkspace);
+      setVisitedWorkspaces([landingWorkspace]);
+
+      if (preload?.sheets && preload.workspace === landingWorkspace) {
+        if (landingWorkspace === 'reception') {
+          setReceptionSheets(preload.sheets);
+          setReceptionLoadError(null);
+          setIsLoadingReception(false);
+        } else {
+          setDoctorSheets(preload.sheets);
+          setDoctorLoadError(null);
+          setIsLoadingDoctor(false);
+        }
+
+        // For Admin, prefetch Doctor in the background without blocking first paint of Reception
+        if (authenticatedUser.role === 'admin') {
+          void fetchWorkspace('doctor');
+        }
+        return;
+      }
+
       if (authenticatedUser.role === 'doctor') {
         void fetchWorkspace('doctor');
       } else if (authenticatedUser.role === 'reception') {
@@ -108,15 +133,21 @@ export default function Home() {
     [fetchWorkspace]
   );
 
-  // Check existing session on load
+  // Single-roundtrip session + landing workbook bootstrap on mount
   useEffect(() => {
-    fetch('/api/auth/me')
+    fetch('/api/auth/me?includeWorkbook=1')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && data.authenticated && data.user) {
           setUser(data.user);
-          setActiveWorkspace(data.user.role === 'doctor' ? 'doctor' : 'reception');
-          loadAuthorizedWorkspaces(data.user);
+          const preload: LoginPreloadPayload | undefined =
+            data.initialWorkspace && data.initialWorkbook?.sheets
+              ? {
+                  workspace: data.initialWorkspace,
+                  sheets: data.initialWorkbook.sheets
+                }
+              : undefined;
+          hydrateSessionWorkspaces(data.user, preload);
         }
       })
       .catch(() => {
@@ -125,13 +156,12 @@ export default function Home() {
       .finally(() => {
         setIsCheckingAuth(false);
       });
-  }, [loadAuthorizedWorkspaces]);
+  }, [hydrateSessionWorkspaces]);
 
-  const handleLoginSuccess = (authenticatedUser: User) => {
+  const handleLoginSuccess = (authenticatedUser: User, preload?: LoginPreloadPayload) => {
     setSessionError(null);
     setUser(authenticatedUser);
-    setActiveWorkspace(authenticatedUser.role === 'doctor' ? 'doctor' : 'reception');
-    loadAuthorizedWorkspaces(authenticatedUser);
+    hydrateSessionWorkspaces(authenticatedUser, preload);
   };
 
   const handleLogout = async (): Promise<void> => {
@@ -155,6 +185,7 @@ export default function Home() {
     setImportNotice(null);
     setIsImportConfirmOpen(false);
     setUser(null);
+    setVisitedWorkspaces([]);
     setReceptionSheets({});
     setDoctorSheets({});
     setReceptionHasUnsaved(false);
@@ -209,6 +240,13 @@ export default function Home() {
     }
   };
 
+  const activateWorkspace = useCallback((targetWorkspace: WorkspaceKey) => {
+    setVisitedWorkspaces((prev) =>
+      prev.includes(targetWorkspace) ? prev : [...prev, targetWorkspace]
+    );
+    setActiveWorkspace(targetWorkspace);
+  }, []);
+
   const handleWorkspaceSwitchRequest = useCallback(
     (targetWorkspace: WorkspaceKey) => {
       if (targetWorkspace === activeWorkspace) return;
@@ -220,15 +258,15 @@ export default function Home() {
         setPendingWorkspaceSwitch(targetWorkspace);
         setShowSwitchWarning(true);
       } else {
-        setActiveWorkspace(targetWorkspace);
+        activateWorkspace(targetWorkspace);
       }
     },
-    [activeWorkspace, allowedWorkspaces, receptionHasUnsaved, doctorHasUnsaved]
+    [activeWorkspace, allowedWorkspaces, receptionHasUnsaved, doctorHasUnsaved, activateWorkspace]
   );
 
   const confirmSwitchAnyway = () => {
     if (pendingWorkspaceSwitch && allowedWorkspaces.includes(pendingWorkspaceSwitch)) {
-      setActiveWorkspace(pendingWorkspaceSwitch);
+      activateWorkspace(pendingWorkspaceSwitch);
       setPendingWorkspaceSwitch(null);
     }
     setShowSwitchWarning(false);
@@ -241,9 +279,27 @@ export default function Home() {
 
   if (isCheckingAuth) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white dark:bg-slate-950">
-        <div className="flex flex-col items-center gap-2">
-          <span className="w-5 h-5 border-2 border-slate-300 border-t-slate-800 dark:border-slate-700 dark:border-t-slate-200 rounded-full animate-spin" />
+      <div className="flex flex-col mk-h-dvh w-full bg-[var(--grid-canvas)] overflow-hidden">
+        <div className="h-12 px-3 sm:px-4 bg-[var(--chrome-bg)] border-b border-[var(--chrome-border)] flex items-center justify-between shrink-0">
+          <div className="h-6 w-28 sm:w-32 rounded bg-[var(--control-bg)] animate-pulse" />
+          <div className="flex items-center gap-2">
+            <div className="h-7 w-14 sm:w-16 rounded-lg bg-[var(--control-bg)] animate-pulse" />
+            <div className="h-7 w-14 sm:w-16 rounded-lg bg-[var(--control-bg)] animate-pulse" />
+          </div>
+        </div>
+        <div className="h-10 px-2.5 sm:px-3 bg-[var(--formula-bg)] border-b border-[var(--chrome-border)] flex items-center gap-2 shrink-0">
+          <div className="h-7 w-[56px] sm:w-[72px] rounded-md bg-[var(--formula-address-bg)] animate-pulse" />
+          <div className="h-7 flex-1 rounded-md bg-[var(--formula-input-bg)] border border-[var(--control-border)] animate-pulse" />
+        </div>
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="flex items-center gap-2.5 text-xs font-medium text-[var(--control-muted)]">
+            <span className="w-4 h-4 border-2 border-[var(--control-border)] border-t-[var(--selection-ring)] rounded-full animate-spin" />
+            <span>Loading MK Eye Center workspace...</span>
+          </div>
+        </div>
+        <div className="h-10 px-3 bg-[var(--tab-strip-bg)] border-t border-[var(--chrome-border)] flex items-center gap-2 shrink-0">
+          <div className="h-6 w-24 rounded-md bg-[var(--tab-bg)] animate-pulse" />
+          <div className="h-6 w-20 rounded-md bg-[var(--tab-bg)] animate-pulse" />
         </div>
       </div>
     );
@@ -251,15 +307,32 @@ export default function Home() {
 
   if (!user) {
     return (
-      <main className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden">
-        {/* Background image covering viewport with natural brightness and visibility */}
-        <div
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-          style={{ backgroundImage: `url('/assets/aistudio/login_bg_de335fe2.jpg')` }}
-        />
+      <main className="relative mk-min-h-dvh w-full flex flex-col overflow-x-hidden overflow-y-auto bg-slate-200 pb-[max(1.25rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))]">
+        {/* Full-bleed edge-to-edge new official background across all devices and orientations */}
+        <div className="fixed inset-0 z-0 pointer-events-none select-none overflow-hidden">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/assets/aistudio/image_bdc5ab00.png"
+            alt="MK Eye Center Portal Background"
+            aria-hidden="true"
+            className="w-full h-full object-cover object-center scale-105"
+          />
+          <div className="absolute inset-0 bg-slate-950/20 backdrop-brightness-95" />
+        </div>
 
-        {/* Glassmorphism Login Card Container */}
-        <div className="relative z-10 w-full max-w-sm sm:max-w-md mx-auto px-4">
+        {/* Official Brand Logo: top-left on desktop, center-aligned on mobile and tablet */}
+        <header className="relative z-20 w-full flex items-center justify-center md:justify-start px-4 sm:px-6 md:px-10 pt-[max(1rem,env(safe-area-inset-top))] sm:pt-6 shrink-0">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/assets/aistudio/mk_long_logo_a5863dd4.png"
+            alt="MK Eye Center"
+            className="h-8 sm:h-9 md:h-10 w-auto max-w-[170px] sm:max-w-[210px] object-contain select-none drop-shadow-[0_2px_10px_rgba(0,0,0,0.6)] hover:scale-102 hover:brightness-105 transition-all duration-150"
+            referrerPolicy="no-referrer"
+          />
+        </header>
+
+        {/* Centered Glassmorphism Login Card */}
+        <div className="relative z-10 flex-1 w-full flex items-center justify-center py-4 sm:py-6 px-1 sm:px-3">
           <LoginCard onSuccess={handleLoginSuccess} externalError={sessionError} />
         </div>
       </main>
@@ -268,6 +341,8 @@ export default function Home() {
 
   const canAccessReception = allowedWorkspaces.includes('reception');
   const canAccessDoctor = allowedWorkspaces.includes('doctor');
+  const shouldMountReception = canAccessReception && (visitedWorkspaces.includes('reception') || activeWorkspace === 'reception');
+  const shouldMountDoctor = canAccessDoctor && (visitedWorkspaces.includes('doctor') || activeWorkspace === 'doctor');
   const isAdmin = user.role === 'admin';
   const canAdminImport =
     isAdmin &&
@@ -280,8 +355,8 @@ export default function Home() {
 
   return (
     <>
-      {canAccessReception && (
-        <div className={activeWorkspace === 'reception' ? 'block h-screen w-full' : 'hidden'}>
+      {shouldMountReception && (
+        <div className={activeWorkspace === 'reception' ? 'block mk-h-dvh w-full overflow-hidden' : 'hidden'}>
           <ExcelSpreadsheet
             workspace="reception"
             user={user}
@@ -292,8 +367,6 @@ export default function Home() {
             onUnsavedStatusChange={setReceptionHasUnsaved}
             onReloadWorkspace={() => fetchWorkspace('reception')}
             onLogout={handleLogout}
-            theme={theme}
-            onToggleTheme={toggleTheme}
             isLoading={isLoadingReception}
             loadError={receptionLoadError}
             defaultSheetName="PATIENT'S DATA"
@@ -305,8 +378,8 @@ export default function Home() {
         </div>
       )}
 
-      {canAccessDoctor && (
-        <div className={activeWorkspace === 'doctor' ? 'block h-screen w-full' : 'hidden'}>
+      {shouldMountDoctor && (
+        <div className={activeWorkspace === 'doctor' ? 'block mk-h-dvh w-full overflow-hidden' : 'hidden'}>
           <ExcelSpreadsheet
             workspace="doctor"
             user={user}
@@ -317,8 +390,6 @@ export default function Home() {
             onUnsavedStatusChange={setDoctorHasUnsaved}
             onReloadWorkspace={() => fetchWorkspace('doctor')}
             onLogout={handleLogout}
-            theme={theme}
-            onToggleTheme={toggleTheme}
             isLoading={isLoadingDoctor}
             loadError={doctorLoadError}
             defaultSheetName="Lens Rx"
