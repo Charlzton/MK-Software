@@ -59,7 +59,15 @@ export function useTheme() {
 
   const applyTheme = useCallback((next: ThemeMode) => {
     if (typeof document !== 'undefined') {
-      document.documentElement.classList.toggle('dark', next === 'dark');
+      const root = document.documentElement;
+      root.classList.add('mk-theme-switching');
+      root.classList.toggle('dark', next === 'dark');
+      void root.getBoundingClientRect();
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          root.classList.remove('mk-theme-switching');
+        });
+      });
     }
     if (typeof window !== 'undefined') {
       try {

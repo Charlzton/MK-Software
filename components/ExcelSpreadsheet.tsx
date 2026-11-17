@@ -31,6 +31,11 @@ import {
   getColumnVisualMeta,
   ColumnVisualMeta
 } from '@/lib/clinicalColumns';
+import {
+  isColumnEligibleForAutocomplete,
+  buildColumnSuggestionIndex,
+  filterAutocompleteSuggestions
+} from '@/lib/cellAutocomplete';
 
 export interface SheetState {
   id?: string;
@@ -142,6 +147,31 @@ function isNonEmptyCell(val: unknown): boolean {
   return val !== '' && val !== null && val !== undefined;
 }
 
+function isMeaningfulCell(val: unknown): boolean {
+  return val !== null && val !== undefined && String(val).trim() !== '';
+}
+
+function parseFeeNumber(val: unknown): number | null {
+  if (val === null || val === undefined) return null;
+  if (typeof val === 'number') {
+    return Number.isFinite(val) ? val : null;
+  }
+  const cleaned = String(val).replace(/,/g, '').trim();
+  if (!cleaned) return null;
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : null;
+}
+
+function normalizePaidDropdownValue(val: unknown): string {
+  if (val === null || val === undefined) return '';
+  const trimmed = String(val).trim();
+  if (!trimmed) return '';
+  const lower = trimmed.toLowerCase();
+  if (lower === 'paid') return 'Paid';
+  if (lower === 'unpaid') return 'Unpaid';
+  return trimmed;
+}
+
 function getAlignmentClass(align: 'left' | 'center' | 'right'): string {
   if (align === 'center') return 'text-center';
   if (align === 'right') return 'text-right';
@@ -153,12 +183,12 @@ function getUniformHeaderClasses(
   isDirty: boolean
 ): string {
   if (isSelected) {
-    return 'bg-[var(--col-title-selected)] text-[var(--col-title-text)]';
+    return 'mk-glass-col-title-selected';
   }
   if (isDirty) {
-    return 'bg-[var(--cell-dirty-bg)] text-[var(--cell-text)]';
+    return 'mk-glass-cell-dirty';
   }
-  return 'bg-[var(--col-title-bg)] hover:bg-[var(--col-title-hover)] text-[var(--col-title-text)]';
+  return 'mk-glass-col-title';
 }
 
 function getUniformCellBgClass(
@@ -166,12 +196,12 @@ function getUniformCellBgClass(
   isDirty: boolean
 ): string {
   if (isSelected) {
-    return 'bg-[var(--cell-selected-bg)] text-[var(--cell-text)]';
+    return 'mk-glass-cell-selected';
   }
   if (isDirty) {
-    return 'bg-[var(--cell-dirty-bg)] text-[var(--cell-text)]';
+    return 'mk-glass-cell-dirty';
   }
-  return 'bg-[var(--cell-bg)] hover:bg-[var(--cell-hover)] text-[var(--cell-text)]';
+  return 'mk-glass-cell';
 }
 
 const SpreadsheetThemeToggle = React.memo(function SpreadsheetThemeToggle({
@@ -192,47 +222,33 @@ const SpreadsheetThemeToggle = React.memo(function SpreadsheetThemeToggle({
       onClick={handleToggle}
       aria-label={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
       title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-      className="p-1.5 bg-transparent border-0 shadow-none text-slate-700 hover:text-slate-950 dark:text-amber-300 dark:hover:text-amber-200 hover:scale-110 transition-transform duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--selection-ring)] rounded-sm cursor-pointer shrink-0 flex items-center justify-center"
+      className="min-w-[34px] min-h-[34px] md:min-w-[30px] md:min-h-[30px] p-1.5 rounded-full bg-transparent hover:bg-white/65 dark:hover:bg-white/10 border border-transparent hover:border-white/80 dark:hover:border-white/15 text-slate-700 hover:text-slate-950 dark:text-amber-300 dark:hover:text-amber-200 transition-all duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--selection-ring)] cursor-pointer shrink-0 flex items-center justify-center touch-manipulation"
     >
-      {isDark ? <Moon className="w-[18px] h-[18px]" /> : <Sun className="w-[18px] h-[18px]" />}
+      {isDark ? <Moon className="w-[17px] h-[17px]" /> : <Sun className="w-[17px] h-[17px]" />}
     </button>
   );
 });
 
 /**
  * Determine which grid row (1 = Excel Row 2, i.e. dataRowIdx = 0) should be opened first:
- * 1. Most recently updated populated row via rowUpdatedAt timestamps when strictly distinguishable.
- * 2. Fallback to the highest populated row_index when timestamps are missing or identical.
- * 3. Fallback to 1 (first data row) when the worksheet has no populated rows.
+ * Clinical/reception entries append downward chronologically, so the latest valid populated
+ * record is the bottom-most row containing at least one meaningful non-whitespace cell
+ * (ignoring trailing blank or whitespace-only spacer rows).
+ * Returns 1 (first data row) when the worksheet has no populated rows.
  */
 function findLatestRecordGridRow(sheet: SheetState | undefined): number {
   if (!sheet || !Array.isArray(sheet.rows) || sheet.rows.length === 0) {
     return 1;
   }
 
-  let bestDataRowIdx = -1;
-  let bestTimestamp = Number.NEGATIVE_INFINITY;
-
-  for (let dataRowIdx = 0; dataRowIdx < sheet.rows.length; dataRowIdx++) {
+  for (let dataRowIdx = sheet.rows.length - 1; dataRowIdx >= 0; dataRowIdx--) {
     const row = sheet.rows[dataRowIdx];
-    const hasData = Array.isArray(row) && row.some(isNonEmptyCell);
-    if (!hasData) continue;
-
-    const rawUpdated = sheet.rowUpdatedAt?.[dataRowIdx];
-    const parsedTs = rawUpdated ? Date.parse(rawUpdated) : Number.NaN;
-    const effectiveTs = Number.isFinite(parsedTs) ? parsedTs : Number.NEGATIVE_INFINITY;
-
-    if (
-      bestDataRowIdx === -1 ||
-      effectiveTs > bestTimestamp ||
-      (effectiveTs === bestTimestamp && dataRowIdx > bestDataRowIdx)
-    ) {
-      bestDataRowIdx = dataRowIdx;
-      bestTimestamp = effectiveTs;
+    if (Array.isArray(row) && row.some(isMeaningfulCell)) {
+      return dataRowIdx + 1;
     }
   }
 
-  return bestDataRowIdx >= 0 ? bestDataRowIdx + 1 : 1;
+  return 1;
 }
 
 function parseClipboardTsv(text: string): string[][] {
@@ -252,6 +268,39 @@ function isTextInputElement(target: EventTarget | null): boolean {
   if (target.isContentEditable) return true;
   if (target.closest('[role="dialog"]')) return true;
   return false;
+}
+
+async function parseJsonSafe(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return { error: text.slice(0, 200) };
+  }
+}
+
+function getAutocompletePopoverStyle(
+  anchorRect: { top: number; left: number; bottom: number; width: number },
+  suggestionCount: number
+): React.CSSProperties {
+  const winW = typeof window !== 'undefined' ? window.innerWidth : 1024;
+  const winH = typeof window !== 'undefined' ? window.innerHeight : 768;
+  const estHeight = Math.min(256, suggestionCount * 34 + 34);
+  const shouldFlipUp =
+    anchorRect.bottom + 6 + estHeight > winH - 12 &&
+    anchorRect.top - 6 - estHeight >= 12;
+  const popTop = shouldFlipUp
+    ? Math.max(8, anchorRect.top - estHeight - 6)
+    : Math.min(winH - estHeight - 8, anchorRect.bottom + 6);
+  const popWidth = Math.min(Math.max(anchorRect.width, 210), Math.min(340, winW - 16));
+  const popLeft = Math.max(8, Math.min(anchorRect.left, winW - popWidth - 8));
+  return {
+    position: 'fixed',
+    top: `${popTop}px`,
+    left: `${popLeft}px`,
+    width: `${popWidth}px`
+  };
 }
 
 function areNumberMapsEqual(
@@ -290,9 +339,11 @@ function extractLayoutsFromSheets(sheetMap: Record<string, SheetState>): {
 }
 
 interface SpreadsheetDataRowProps {
+  workspace: 'reception' | 'doctor';
+  paidColIdx: number;
   gridRowIdx: number;
   rowCells: (string | number)[] | undefined;
-  totalCols: number;
+  colIndices: number[];
   rowHeaderWidth: number;
   colMetaList: ColumnVisualMeta[];
   manualHeight: number | undefined;
@@ -305,26 +356,19 @@ interface SpreadsheetDataRowProps {
   selectedColStart: number;
   selectedColEnd: number;
   dirtyColsKey?: string;
-  workspace: 'reception' | 'doctor';
-  paidColIdx: number;
-  onRowHeaderClick: (gridRowIdx: number, shiftKey: boolean) => void;
-  onRowHeaderContextMenu: (gridRowIdx: number, x: number, y: number) => void;
-  onRowHeaderTouchStart: (gridRowIdx: number, e: React.PointerEvent<HTMLTableCellElement>) => void;
-  onRowResizeStart: (gridRowIdx: number, e: React.PointerEvent<HTMLDivElement>) => void;
-  onCellClick: (gridRowIdx: number, colIdx: number, shiftKey: boolean, detail?: number) => void;
-  onCellDoubleClick: (gridRowIdx: number, colIdx: number, detail: number) => void;
-  onCellContextMenu: (gridRowIdx: number, colIdx: number, x: number, y: number) => void;
-  onCellTouchStart: (gridRowIdx: number, colIdx: number, e: React.PointerEvent<HTMLTableCellElement>) => void;
   onEditValueChange: (val: string) => void;
+  onEditKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onCommitEdit: () => void;
+  onSelectCellValue: (gridRowIdx: number, colIdx: number, value: string) => void;
   setEditInputRef: (el: HTMLInputElement | null) => void;
-  setRowElementRef: (gridRowIdx: number, el: HTMLTableRowElement | null) => void;
 }
 
 const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
+  workspace,
+  paidColIdx,
   gridRowIdx,
   rowCells,
-  totalCols,
+  colIndices,
   rowHeaderWidth,
   colMetaList,
   manualHeight,
@@ -337,18 +381,11 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
   selectedColStart,
   selectedColEnd,
   dirtyColsKey,
-  onRowHeaderClick,
-  onRowHeaderContextMenu,
-  onRowHeaderTouchStart,
-  onRowResizeStart,
-  onCellClick,
-  onCellDoubleClick,
-  onCellContextMenu,
-  onCellTouchStart,
   onEditValueChange,
+  onEditKeyDown,
   onCommitEdit,
-  setEditInputRef,
-  setRowElementRef
+  onSelectCellValue,
+  setEditInputRef
 }: SpreadsheetDataRowProps) {
   const excelRowNum = gridRowIdx + 1;
   const dirtyColSet = useMemo(() => {
@@ -357,40 +394,33 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
   }, [dirtyColsKey]);
 
   const effectiveRowHeight = manualHeight ?? DEFAULT_DATA_ROW_HEIGHT;
+  const maxContentHeight = manualHeight ? Math.max(20, manualHeight - 16) : 0;
 
   return (
     <tr
-      ref={(el) => setRowElementRef(gridRowIdx, el)}
+      data-row-idx={gridRowIdx}
       style={{ height: `${effectiveRowHeight}px` }}
     >
       <th
-        onClick={(e) => onRowHeaderClick(gridRowIdx, e.shiftKey)}
-        onPointerDown={(e) => onRowHeaderTouchStart(gridRowIdx, e)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onRowHeaderContextMenu(gridRowIdx, e.clientX, e.clientY);
-        }}
+        data-rh={gridRowIdx}
         style={{ width: `${rowHeaderWidth}px`, minWidth: `${rowHeaderWidth}px` }}
-        className={`px-1 text-center text-[11px] tabular-nums align-middle sticky left-0 z-[15] select-none cursor-pointer touch-manipulation rounded-l-[8px] rounded-r-none shadow-[-4px_0_0_0_var(--grid-canvas)] ${
+        className={`px-1 text-center text-[11px] tabular-nums align-middle sticky left-0 z-[15] select-none cursor-pointer touch-manipulation rounded-l-[8px] rounded-r-[3px] mk-glass-row-sticky ${
           isRowHighlighted && isFullRowMode
-            ? 'bg-[var(--header-tile-active)] text-[var(--header-text-active)] font-semibold'
+            ? 'mk-glass-header-tile-active font-semibold'
             : isRowHighlighted
-              ? 'bg-[var(--header-tile-range)] text-[var(--col-title-text)] font-semibold'
-              : 'bg-[var(--header-tile-bg)] hover:bg-[var(--header-tile-hover)] text-[var(--header-text)] font-medium'
+              ? 'mk-glass-header-tile-range font-semibold'
+              : 'mk-glass-header-tile font-medium'
         }`}
       >
         <span>{excelRowNum}</span>
         <div
-          onPointerDown={(e) => onRowResizeStart(gridRowIdx, e)}
-          onClick={(e) => e.stopPropagation()}
-          onDoubleClick={(e) => e.stopPropagation()}
+          data-row-resize={gridRowIdx}
           title="Drag to resize row height"
           className="absolute left-1 right-0 bottom-0 h-3 md:h-1.5 cursor-row-resize touch-none hover:bg-[var(--resize-accent)]/70 rounded-full z-20"
         />
       </th>
 
-      {Array.from({ length: totalCols }).map((_, cIdx) => {
+      {colIndices.map((cIdx) => {
         const isAnchor = anchorCol === cIdx;
         const isInSel =
           selectedColStart !== -1 && cIdx >= selectedColStart && cIdx <= selectedColEnd;
@@ -402,21 +432,28 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
         const showRangeTint =
           isInSel && !(isAnchor && !isFullRowMode && selectedColStart === selectedColEnd);
         const bgClass = getUniformCellBgClass(showRangeTint, isDirty);
+        const isPaidDropdownCell = workspace === 'reception' && paidColIdx >= 0 && cIdx === paidColIdx;
+        const normalizedPaidVal = isPaidDropdownCell ? normalizePaidDropdownValue(cellVal) : '';
+        const hasLegacyPaidVal =
+          isPaidDropdownCell &&
+          normalizedPaidVal !== '' &&
+          normalizedPaidVal !== 'Paid' &&
+          normalizedPaidVal !== 'Unpaid';
+        const paidToneClass =
+          normalizedPaidVal === 'Paid'
+            ? 'text-emerald-700 dark:text-emerald-300 font-semibold'
+            : normalizedPaidVal === 'Unpaid'
+              ? 'text-rose-700 dark:text-rose-300 font-semibold'
+              : 'text-[var(--cell-muted)]';
 
         return (
           <td
             key={cIdx}
-            onClick={(e) => onCellClick(gridRowIdx, cIdx, e.shiftKey, e.detail)}
-            onDoubleClick={(e) => onCellDoubleClick(gridRowIdx, cIdx, e.detail)}
-            onPointerDown={(e) => onCellTouchStart(gridRowIdx, cIdx, e)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onCellContextMenu(gridRowIdx, cIdx, e.clientX, e.clientY);
-            }}
-            className={`px-2 sm:px-3 py-2 relative text-xs leading-[20px] font-normal tabular-nums align-middle rounded-[5px] touch-manipulation ${alignClass} ${bgClass} ${
+            data-r={gridRowIdx}
+            data-c={cIdx}
+            className={`${isPaidDropdownCell ? 'px-1.5 py-1' : 'px-2 sm:px-3 py-2'} relative text-xs leading-[20px] font-normal tabular-nums align-middle rounded-[6px] touch-manipulation ${alignClass} ${bgClass} ${
               isAnchor && !isCellEditing
-                ? 'ring-2 ring-inset ring-[var(--selection-ring)] z-10'
+                ? 'mk-glass-cell-anchor z-[13]'
                 : ''
             }`}
           >
@@ -432,9 +469,45 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
                 type="text"
                 value={editValueIfEditing}
                 onChange={(e) => onEditValueChange(e.target.value)}
+                onKeyDown={onEditKeyDown}
                 onBlur={onCommitEdit}
-                className={`absolute inset-0 w-full h-full px-2 sm:px-3 text-base sm:text-xs rounded-[5px] bg-[var(--formula-input-bg)] text-[var(--control-text)] border-2 border-[var(--selection-ring)] outline-none z-10 ${alignClass}`}
+                className={`absolute inset-0 w-full h-full px-2 sm:px-3 text-base sm:text-xs rounded-[6px] bg-[var(--formula-input-bg)] text-[var(--control-text)] border-2 border-[var(--selection-ring)] shadow-[0_0_0_2px_rgba(37,99,235,0.2)] dark:shadow-[0_0_0_2px_rgba(56,189,248,0.22)] outline-none z-20 ${alignClass}`}
               />
+            ) : isPaidDropdownCell ? (
+              <select
+                aria-label={`Payment status row ${excelRowNum}`}
+                value={normalizedPaidVal}
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === 'ArrowUp' ||
+                    e.key === 'ArrowDown' ||
+                    e.key === 'Enter' ||
+                    e.key === ' ' ||
+                    e.key === 'Escape'
+                  ) {
+                    e.stopPropagation();
+                  }
+                }}
+                onChange={(e) => onSelectCellValue(gridRowIdx, cIdx, e.target.value)}
+                className={`w-full min-h-[26px] h-[26px] px-1.5 text-xs leading-tight rounded-[5px] bg-white/50 hover:bg-white/85 dark:bg-slate-900/45 dark:hover:bg-slate-900/75 border border-slate-300/60 dark:border-white/15 focus:border-[var(--selection-ring)] focus:outline-none cursor-pointer touch-manipulation ${paidToneClass}`}
+              >
+                <option value="" className="bg-white dark:bg-slate-900 text-[var(--control-muted)]">
+                  —
+                </option>
+                <option value="Paid" className="bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-300 font-semibold">
+                  Paid
+                </option>
+                <option value="Unpaid" className="bg-white dark:bg-slate-900 text-rose-700 dark:text-rose-300 font-semibold">
+                  Unpaid
+                </option>
+                {hasLegacyPaidVal && (
+                  <option value={normalizedPaidVal} className="bg-white dark:bg-slate-900 text-[var(--control-text)]">
+                    {normalizedPaidVal}
+                  </option>
+                )}
+              </select>
             ) : (
               <div
                 className={
@@ -443,8 +516,8 @@ const SpreadsheetDataRow = React.memo(function SpreadsheetDataRow({
                     : 'truncate whitespace-nowrap leading-[20px] h-[20px]'
                 }
                 style={
-                  manualHeight
-                    ? { maxHeight: `${Math.max(20, manualHeight - 16)}px`, overflowY: 'auto' }
+                  maxContentHeight
+                    ? { maxHeight: `${maxContentHeight}px`, overflowY: 'auto' }
                     : undefined
                 }
               >
@@ -548,7 +621,77 @@ export function ExcelSpreadsheet({
 
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editValue, setEditValue] = useState<string>('');
+  const [editSource, setEditSource] = useState<'cell' | 'formula' | null>(null);
+  const [autocompleteDismissed, setAutocompleteDismissed] = useState<boolean>(false);
+  const [autocompleteIndex, setAutocompleteIndex] = useState<number>(-1);
+  const [autocompleteAnchorRect, setAutocompleteAnchorRect] = useState<{
+    top: number;
+    left: number;
+    bottom: number;
+    width: number;
+  } | null>(null);
   const [isWrapEnabled, setIsWrapEnabled] = useState<boolean>(true);
+
+  // Imperative edit draft tracking (event handlers only — never synced in useEffect)
+  const editDraftRef = useRef<{
+    active: boolean;
+    value: string;
+    source: 'cell' | 'formula' | null;
+  }>({ active: false, value: '', source: null });
+
+  // Latest-state mirror refs (declared before all hooks/effects; synced exclusively in useEffect)
+  const sheetsRef = useRef(sheets);
+  const sheetKeysRef = useRef<string[]>([]);
+  const activeSheetNameRef = useRef(activeSheetName);
+  const selectionRef = useRef(selection);
+  const selectionBoundsRef = useRef<{ rMin: number; rMax: number; cMin: number; cMax: number }>({
+    rMin: initialLatestRow,
+    rMax: initialLatestRow,
+    cMin: 0,
+    cMax: 0
+  });
+  const editValueRef = useRef(editValue);
+  const editSourceRef = useRef(editSource);
+  const autocompleteSuggestionsRef = useRef<string[]>([]);
+  const autocompleteIndexRef = useRef<number>(-1);
+  const isEditingRef = useRef(isEditing);
+  const selectedCellRef = useRef(selectedCell);
+  const selectionModeRef = useRef(selection.mode);
+  const renamingSheetNameRef = useRef<string | null>(null);
+  const isTourOpenRef = useRef<boolean>(false);
+  const pendingBulkClearRef = useRef<{
+    updates: Array<{ row: number; col: number; value: string | number }>;
+    populatedCount: number;
+    includesHeader: boolean;
+  } | null>(null);
+  const pendingConfirmActionRef = useRef<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    confirmVariant: 'danger' | 'primary';
+    run: () => void;
+  } | null>(null);
+  const contextMenuRef = useRef<ContextMenuTarget | null>(null);
+  const resizeColDialogRef = useRef<{
+    colIndex: number;
+    currentWidth: number;
+    defaultWidth: number;
+  } | null>(null);
+  const totalColsRef = useRef<number>(26);
+  const displayRowsCountRef = useRef<number>(60);
+  const activeDimKeyRef = useRef<string>('');
+  const totalTableWidthRef = useRef<number>(0);
+  const commitEditRef = useRef<(rowDelta?: number, colDelta?: number) => void>(() => {});
+  const getCellValueRef = useRef<(r: number, c: number) => string | number>(() => '');
+  const getColWidthRef = useRef<(colIndex: number) => number>(() => DEFAULT_COL_WIDTH);
+  const getManualRowHeightRef = useRef<(gridRowIdx: number) => number | undefined>(() => undefined);
+  const justLongPressedRef = useRef<boolean>(false);
+  const receptionColsRef = useRef<{
+    testFeeColIdx: number;
+    medicationColIdx: number;
+    totalColIdx: number;
+    paidColIdx: number;
+  }>({ testFeeColIdx: -1, medicationColIdx: -1, totalColIdx: -1, paidColIdx: -1 });
 
   // Per-sheet persisted column widths & manual row heights
   const initialLayouts = useMemo(() => extractLayoutsFromSheets(initialSheets), [initialSheets]);
@@ -715,6 +858,7 @@ export function ExcelSpreadsheet({
   const headerTitleTdRefs = useRef<Record<number, HTMLTableCellElement | null>>({});
   const rowElementsRef = useRef<Record<number, HTMLTableRowElement | null>>({});
   const headerRowThRef = useRef<HTMLTableCellElement | null>(null);
+  const formulaInputRef = useRef<HTMLInputElement | null>(null);
 
   // Worksheet management state: immediate add, inline rename, right-click context menu, pointer drag & drop reorder
   const [isCreatingSheet, setIsCreatingSheet] = useState(false);
@@ -815,13 +959,6 @@ export function ExcelSpreadsheet({
     });
   }, [sheets]);
 
-  const sheetKeysRef = useRef(sheetKeys);
-  const sheetsRef = useRef(sheets);
-  useEffect(() => {
-    sheetKeysRef.current = sheetKeys;
-    sheetsRef.current = sheets;
-  });
-
   const currentSheet = useMemo(() => {
     return (
       sheets[activeSheetName] || {
@@ -831,6 +968,24 @@ export function ExcelSpreadsheet({
     );
   }, [sheets, activeSheetName]);
 
+  // Detect Reception billing & payment columns dynamically from worksheet headers
+  const receptionCols = useMemo(() => {
+    if (workspace !== 'reception') {
+      return { testFeeColIdx: -1, medicationColIdx: -1, totalColIdx: -1, paidColIdx: -1 };
+    }
+    const findHeaderIdx = (names: string[]): number =>
+      currentSheet.headers.findIndex((h) => {
+        const norm = String(h ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+        return names.includes(norm);
+      });
+    return {
+      testFeeColIdx: findHeaderIdx(['test_fee', 'test fee']),
+      medicationColIdx: findHeaderIdx(['medication']),
+      totalColIdx: findHeaderIdx(['total']),
+      paidColIdx: findHeaderIdx(['paid'])
+    };
+  }, [workspace, currentSheet.headers]);
+
   const maxRowCols = useMemo(() => {
     return currentSheet.rows.reduce((max, r) => Math.max(max, r ? r.length : 0), 0);
   }, [currentSheet.rows]);
@@ -838,6 +993,11 @@ export function ExcelSpreadsheet({
   // Support wide worksheets (up to 52+ columns as in Lens Rx or Medications)
   const totalCols = Math.max(currentSheet.headers.length, maxRowCols, 26);
   const displayRowsCount = Math.max(currentSheet.rows.length + 30, 60);
+  const colIndices = useMemo(() => Array.from({ length: totalCols }, (_, i) => i), [totalCols]);
+  const dataRowIndices = useMemo(
+    () => Array.from({ length: displayRowsCount - 1 }, (_, i) => i + 1),
+    [displayRowsCount]
+  );
 
   // Header-driven clinical classification, width, and alignment per column
   const colMetaList: ColumnVisualMeta[] = useMemo(() => {
@@ -996,53 +1156,113 @@ export function ExcelSpreadsheet({
     return `${getColumnLetter(selection.anchorCol)}${selection.anchorRow + 1}`;
   }, [selection, selectionBounds]);
 
-  // Auto-position scroll viewport to the latest record when a worksheet opens or becomes visible
+  // Re-trigger latest-record positioning whenever user switches back to this workspace
   const isActiveWorkspace = workspace === activeWorkspace;
+  const prevIsActiveWorkspaceRef = useRef<boolean>(isActiveWorkspace);
+  useEffect(() => {
+    const wasActive = prevIsActiveWorkspaceRef.current;
+    prevIsActiveWorkspaceRef.current = isActiveWorkspace;
+    if (wasActive || !isActiveWorkspace || isLoading) return;
+
+    const rafId = window.requestAnimationFrame(() => {
+      const sheetName = activeSheetNameRef.current;
+      const sheet = sheetName ? sheetsRef.current[sheetName] : undefined;
+      if (!sheetName || !sheet || isEditingRef.current) return;
+
+      const latestRow = findLatestRecordGridRow(sheet);
+      setSelection({
+        mode: 'cell',
+        anchorRow: latestRow,
+        anchorCol: 0,
+        focusRow: latestRow,
+        focusCol: 0
+      });
+      setScrollPositionRequest((prev) => ({
+        sheetName,
+        targetRow: latestRow,
+        nonce: prev.nonce + 1
+      }));
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [isActiveWorkspace, isLoading]);
+
+  // Auto-position scroll viewport to the latest record when a worksheet opens, loads, or becomes visible
   useEffect(() => {
     if (!isActiveWorkspace || isLoading) return;
     if (scrollPositionRequest.nonce === 0) return;
     if (scrollPositionRequest.sheetName !== activeSheetName) return;
     if (lastExecutedScrollNonceRef.current === scrollPositionRequest.nonce) return;
 
-    const container = gridContainerRef.current;
-    if (!container || container.clientHeight === 0) return;
-
-    lastExecutedScrollNonceRef.current = scrollPositionRequest.nonce;
     const targetRow = scrollPositionRequest.targetRow;
+    const requestNonce = scrollPositionRequest.nonce;
+    let rafId: number | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let cancelled = false;
 
-    const rafId = window.requestAnimationFrame(() => {
+    const executeScroll = (): boolean => {
+      if (cancelled) return true;
       const el = gridContainerRef.current;
-      if (!el || el.clientHeight === 0) return;
+      if (!el || el.clientHeight === 0) return false;
 
-      const theadHeight = theadRef.current?.offsetHeight ?? 58;
       if (targetRow <= 1) {
+        lastExecutedScrollNonceRef.current = requestNonce;
         el.scrollTop = 0;
         el.scrollLeft = 0;
-        return;
+        return true;
       }
 
       const tbodyEl = tbodyRef.current;
       const targetTr = tbodyEl?.children[targetRow - 1] as HTMLElement | undefined;
+      if (!targetTr) return false;
+
+      const theadHeight = theadRef.current?.getBoundingClientRect().height ?? 58;
       const viewportDataHeight = Math.max(120, el.clientHeight - theadHeight);
+      const elRect = el.getBoundingClientRect();
+      const trRect = targetTr.getBoundingClientRect();
+      const rowTopInContent = Math.max(0, el.scrollTop + (trRect.top - elRect.top) - theadHeight);
 
-      if (targetTr) {
-        const rowTopInTbody = Math.max(0, targetTr.offsetTop - theadHeight);
-        el.scrollTop = Math.max(0, rowTopInTbody - Math.floor(viewportDataHeight * 0.45));
-      } else {
-        const estimatedY = (targetRow - 1) * DEFAULT_DATA_ROW_HEIGHT;
-        el.scrollTop = Math.max(0, estimatedY - Math.floor(viewportDataHeight * 0.45));
-      }
+      lastExecutedScrollNonceRef.current = requestNonce;
+      el.scrollTop = Math.max(0, rowTopInContent - Math.floor(viewportDataHeight * 0.45));
       el.scrollLeft = 0;
-    });
+      return true;
+    };
 
-    return () => window.cancelAnimationFrame(rafId);
+    const scheduleAttempt = () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        if (executeScroll()) {
+          if (resizeObserver) {
+            resizeObserver.disconnect();
+            resizeObserver = null;
+          }
+        }
+      });
+    };
+
+    scheduleAttempt();
+
+    const container = gridContainerRef.current;
+    if (container && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        if (lastExecutedScrollNonceRef.current !== requestNonce) {
+          scheduleAttempt();
+        }
+      });
+      resizeObserver.observe(container);
+    }
+
+    return () => {
+      cancelled = true;
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      if (resizeObserver) resizeObserver.disconnect();
+    };
   }, [isActiveWorkspace, isLoading, activeSheetName, scrollPositionRequest]);
 
   // Keep keyboard-selected row visible below sticky headers when navigating with Arrow/Tab/Enter
   const ensureRowVisible = useCallback((targetGridRow: number) => {
     const container = gridContainerRef.current;
-    if (!container) return;
-    const theadHeight = theadRef.current?.offsetHeight ?? 58;
+    if (!container || container.clientHeight === 0) return;
 
     if (targetGridRow <= 0) {
       container.scrollTop = 0;
@@ -1052,15 +1272,20 @@ export function ExcelSpreadsheet({
     const targetTr = tbodyRef.current?.children[targetGridRow - 1] as HTMLElement | undefined;
     if (!targetTr) return;
 
-    const rowTop = targetTr.offsetTop;
-    const rowBottom = rowTop + targetTr.offsetHeight;
-    const visibleTop = container.scrollTop + theadHeight;
-    const visibleBottom = container.scrollTop + container.clientHeight;
+    const theadHeight = theadRef.current?.getBoundingClientRect().height ?? 58;
+    const containerRect = container.getBoundingClientRect();
+    const trRect = targetTr.getBoundingClientRect();
 
-    if (rowTop < visibleTop) {
-      container.scrollTop = Math.max(0, rowTop - theadHeight);
-    } else if (rowBottom > visibleBottom) {
-      container.scrollTop = rowBottom - container.clientHeight;
+    const topRelativeToViewport = trRect.top - containerRect.top;
+    const bottomRelativeToViewport = trRect.bottom - containerRect.top;
+
+    if (topRelativeToViewport < theadHeight) {
+      container.scrollTop = Math.max(0, container.scrollTop + (topRelativeToViewport - theadHeight));
+    } else if (bottomRelativeToViewport > container.clientHeight) {
+      container.scrollTop = Math.max(
+        0,
+        container.scrollTop + (bottomRelativeToViewport - container.clientHeight)
+      );
     }
   }, []);
 
@@ -1164,12 +1389,77 @@ export function ExcelSpreadsheet({
         selectionAfter?: SelectionState;
       }
     ) => {
-      const targetSheet = sheets[activeSheetName];
+      const sheetName = activeSheetNameRef.current;
+      const targetSheet = sheetsRef.current[sheetName];
       if (!targetSheet || !targetSheet.id || updates.length === 0) {
         return;
       }
 
       const sheetId = targetSheet.id;
+      const curTotalCols = totalColsRef.current;
+
+      // In Reception worksheets, auto-recalculate Total = Test_Fee + Medication
+      // whenever Test_Fee or Medication changes (unless undo/redo or Total itself is explicitly edited).
+      let resolvedUpdates = updates;
+      const { testFeeColIdx, medicationColIdx, totalColIdx } = receptionColsRef.current;
+      if (
+        workspace === 'reception' &&
+        options?.recordHistory !== false &&
+        totalColIdx >= 0 &&
+        (testFeeColIdx >= 0 || medicationColIdx >= 0)
+      ) {
+        const feeTouchedRows = new Set<number>();
+        const explicitTotalRows = new Set<number>();
+        const patchLookup = new Map<string, string | number>();
+
+        for (const u of updates) {
+          if (u.row >= 1 && u.col >= 0) {
+            patchLookup.set(`${u.row}:${u.col}`, u.value);
+            if (u.col === testFeeColIdx || u.col === medicationColIdx) {
+              feeTouchedRows.add(u.row);
+            }
+            if (u.col === totalColIdx) {
+              explicitTotalRows.add(u.row);
+            }
+          }
+        }
+
+        const autoTotalUpdates: Array<{ row: number; col: number; value: string | number }> = [];
+        for (const rIdx of feeTouchedRows) {
+          if (explicitTotalRows.has(rIdx)) continue;
+          const existingRow = targetSheet.rows[rIdx - 1];
+          const nextTestFeeRaw =
+            testFeeColIdx >= 0
+              ? patchLookup.has(`${rIdx}:${testFeeColIdx}`)
+                ? patchLookup.get(`${rIdx}:${testFeeColIdx}`)
+                : existingRow?.[testFeeColIdx] ?? ''
+              : '';
+          const nextMedRaw =
+            medicationColIdx >= 0
+              ? patchLookup.has(`${rIdx}:${medicationColIdx}`)
+                ? patchLookup.get(`${rIdx}:${medicationColIdx}`)
+                : existingRow?.[medicationColIdx] ?? ''
+              : '';
+
+          const testFeeNum = parseFeeNumber(nextTestFeeRaw);
+          const medNum = parseFeeNumber(nextMedRaw);
+
+          if (testFeeNum !== null || medNum !== null) {
+            const sum = Math.round(((testFeeNum ?? 0) + (medNum ?? 0)) * 100) / 100;
+            autoTotalUpdates.push({ row: rIdx, col: totalColIdx, value: sum });
+          } else if (
+            String(nextTestFeeRaw ?? '').trim() === '' &&
+            String(nextMedRaw ?? '').trim() === ''
+          ) {
+            autoTotalUpdates.push({ row: rIdx, col: totalColIdx, value: '' });
+          }
+        }
+
+        if (autoTotalUpdates.length > 0) {
+          resolvedUpdates = [...updates, ...autoTotalUpdates];
+        }
+      }
+
       const nextDirtyHeaders = { ...dirtyHeadersRef.current };
       const nextDirtyCells = { ...dirtyCellsRef.current };
       let headersChanged = false;
@@ -1179,7 +1469,7 @@ export function ExcelSpreadsheet({
       const updatedRows = [...targetSheet.rows];
       const diffs: CellDiffEntry[] = [];
 
-      for (const { row: r, col: c, value } of updates) {
+      for (const { row: r, col: c, value } of resolvedUpdates) {
         if (r < 0 || c < 0 || c >= MAX_COLS_LIMIT) continue;
 
         const prevValue =
@@ -1210,7 +1500,7 @@ export function ExcelSpreadsheet({
               existingDirtyHeader?.expectedHeaderVersion ?? targetSheet.headerVersion ?? 1;
             nextDirtyHeaders[headerKey] = {
               sheetId,
-              sheetName: activeSheetName,
+              sheetName,
               colIndex: c,
               newHeader: String(value),
               originalHeader,
@@ -1221,7 +1511,7 @@ export function ExcelSpreadsheet({
           rowsChanged = true;
           const dataRowIdx = r - 1;
           while (updatedRows.length <= dataRowIdx) {
-            updatedRows.push(new Array(totalCols).fill(''));
+            updatedRows.push(new Array(curTotalCols).fill(''));
           }
           const rowCopy = [...(updatedRows[dataRowIdx] || [])];
           while (rowCopy.length <= c) {
@@ -1245,7 +1535,7 @@ export function ExcelSpreadsheet({
 
             nextDirtyCells[cellKey] = {
               sheetId,
-              sheetName: activeSheetName,
+              sheetName,
               rowIndex: dataRowIdx,
               colIndex: c,
               value,
@@ -1261,9 +1551,9 @@ export function ExcelSpreadsheet({
       }
 
       if (options?.recordHistory !== false && diffs.length > 0) {
-        const stackKey = sheetId || activeSheetName;
+        const stackKey = sheetId || sheetName;
         const prevStack = undoStackBySheetRef.current[stackKey] || [];
-        const selSnapshot = options?.selectionBefore ?? selection;
+        const selSnapshot = options?.selectionBefore ?? selectionRef.current;
         const step: HistoryStep = {
           diffs,
           selectionBefore: selSnapshot,
@@ -1283,11 +1573,11 @@ export function ExcelSpreadsheet({
       }
 
       setSheets((prev) => {
-        const sheet = prev[activeSheetName];
+        const sheet = prev[sheetName];
         if (!sheet) return prev;
         return {
           ...prev,
-          [activeSheetName]: {
+          [sheetName]: {
             ...sheet,
             ...(headersChanged ? { headers: updatedHeaders } : {}),
             ...(rowsChanged ? { rows: updatedRows } : {})
@@ -1317,7 +1607,7 @@ export function ExcelSpreadsheet({
         setSaveMessage('');
       }
     },
-    [activeSheetName, sheets, totalCols, selection]
+    [workspace, computePendingLayouts, scheduleAutosave]
   );
 
   const setCellValue = useCallback(
@@ -1332,23 +1622,52 @@ export function ExcelSpreadsheet({
     [applyCellUpdates]
   );
 
+  const handleSelectCellValue = useCallback(
+    (gridRowIdx: number, colIdx: number, nextVal: string) => {
+      if (editDraftRef.current.active) {
+        commitEditRef.current(0, 0);
+      }
+      const nextSelection: SelectionState = {
+        mode: 'cell',
+        anchorRow: gridRowIdx,
+        anchorCol: colIdx,
+        focusRow: gridRowIdx,
+        focusCol: colIdx
+      };
+      setCellValue(gridRowIdx, colIdx, nextVal, {
+        selectionBefore: selectionRef.current,
+        selectionAfter: nextSelection
+      });
+      setSelection(nextSelection);
+    },
+    [setCellValue]
+  );
+
   useEffect(() => {
-    if (isEditing && editInputRef.current) {
+    if (isEditing && editSource !== 'formula' && editInputRef.current) {
       editInputRef.current.focus();
     }
-  }, [isEditing]);
+  }, [isEditing, editSource]);
 
   // Commit current edit, optionally stepping rowDelta / colDelta afterwards
   const commitEdit = useCallback(
     (rowDelta: number = 0, colDelta: number = 0) => {
-      if (!isEditing) return;
-      const currentSelection = selection;
-      const prevVal = getCellValue(selectedCell.row, selectedCell.col);
+      if (!editDraftRef.current.active) return;
+      editDraftRef.current = { active: false, value: '', source: null };
+
+      const currentSelection = selectionRef.current;
+      const curRow = currentSelection.anchorRow;
+      const curCol = currentSelection.anchorCol;
+      const activeInput =
+        editInputRef.current ??
+        (document.activeElement === formulaInputRef.current ? formulaInputRef.current : null);
+      const curEditValue = activeInput ? activeInput.value : editValueRef.current;
+      const prevVal = getCellValueRef.current(curRow, curCol);
 
       let nextSelection = currentSelection;
       if (rowDelta !== 0 || colDelta !== 0) {
-        const nextRow = Math.max(0, Math.min(displayRowsCount - 1, selectedCell.row + rowDelta));
-        const nextCol = Math.max(0, Math.min(totalCols - 1, selectedCell.col + colDelta));
+        const nextRow = Math.max(0, Math.min(displayRowsCountRef.current - 1, curRow + rowDelta));
+        const nextCol = Math.max(0, Math.min(totalColsRef.current - 1, curCol + colDelta));
         nextSelection = {
           mode: 'cell',
           anchorRow: nextRow,
@@ -1358,58 +1677,165 @@ export function ExcelSpreadsheet({
         };
       }
 
-      if (String(prevVal ?? '') !== editValue) {
-        setCellValue(selectedCell.row, selectedCell.col, editValue, {
+      if (String(prevVal ?? '') !== curEditValue) {
+        setCellValue(curRow, curCol, curEditValue, {
           selectionBefore: currentSelection,
           selectionAfter: nextSelection
         });
       }
       setIsEditing(false);
+      setEditSource(null);
+      setAutocompleteDismissed(false);
+      setAutocompleteIndex(-1);
 
       if (rowDelta !== 0 || colDelta !== 0) {
         setSelection(nextSelection);
         ensureRowVisible(nextSelection.anchorRow);
       }
     },
-    [
-      isEditing,
-      selection,
-      getCellValue,
-      selectedCell.row,
-      selectedCell.col,
-      editValue,
-      setCellValue,
-      displayRowsCount,
-      ensureRowVisible,
-      totalCols
-    ]
+    [setCellValue, ensureRowVisible]
   );
 
   const cancelEdit = useCallback(() => {
+    editDraftRef.current = { active: false, value: '', source: null };
     setIsEditing(false);
+    setEditSource(null);
+    setAutocompleteDismissed(false);
+    setAutocompleteIndex(-1);
   }, []);
 
-  // Latest-state refs so memoized row callbacks & window listeners stay current without re-renders
-  const isEditingRef = useRef(isEditing);
-  const selectedCellRef = useRef(selectedCell);
-  const selectionModeRef = useRef(selection.mode);
-  const renamingSheetNameRef = useRef(renamingSheetName);
-  const isTourOpenRef = useRef(isTourOpen);
-  const pendingBulkClearRef = useRef(pendingBulkClear);
-  const pendingConfirmActionRef = useRef(pendingConfirmAction);
-  const contextMenuRef = useRef(contextMenu);
-  const resizeColDialogRef = useRef(resizeColDialog);
-  const totalColsRef = useRef(totalCols);
-  const displayRowsCountRef = useRef(displayRowsCount);
-  const activeDimKeyRef = useRef(activeDimKey);
-  const totalTableWidthRef = useRef(totalTableWidth);
-  const commitEditRef = useRef(commitEdit);
-  const getCellValueRef = useRef(getCellValue);
-  const getColWidthRef = useRef(getColWidth);
-  const getManualRowHeightRef = useRef(getManualRowHeight);
-  const justLongPressedRef = useRef<boolean>(false);
+  // Smart In-Memory Cell Autocomplete (strictly local to active worksheet & eligible text column)
+  const isAutocompleteEligibleCol = useMemo(() => {
+    if (!isEditing || selection.mode !== 'cell' || selectedCell.row < 1) {
+      return false;
+    }
+    return isColumnEligibleForAutocomplete(
+      currentSheet.headers,
+      selectedCell.col,
+      currentSheet.rows,
+      activeSheetName
+    );
+  }, [isEditing, selection.mode, selectedCell.row, selectedCell.col, currentSheet.headers, currentSheet.rows, activeSheetName]);
+
+  const activeColAutocompleteEntries = useMemo(() => {
+    if (!isAutocompleteEligibleCol) return [];
+    return buildColumnSuggestionIndex(currentSheet.rows, selectedCell.col);
+  }, [isAutocompleteEligibleCol, currentSheet.rows, selectedCell.col]);
+
+  const autocompleteSuggestions = useMemo(() => {
+    if (!isEditing || autocompleteDismissed || !isAutocompleteEligibleCol) {
+      return [];
+    }
+    return filterAutocompleteSuggestions(activeColAutocompleteEntries, editValue, 8);
+  }, [isEditing, autocompleteDismissed, isAutocompleteEligibleCol, activeColAutocompleteEntries, editValue]);
+
+  const activeAutocompleteIdx =
+    autocompleteIndex >= 0 && autocompleteIndex < autocompleteSuggestions.length
+      ? autocompleteIndex
+      : -1;
+
+  const updateAutocompleteAnchorRect = useCallback(() => {
+    const anchorEl =
+      editSource === 'formula'
+        ? formulaInputRef.current
+        : (editInputRef.current ?? formulaInputRef.current);
+    if (!anchorEl) {
+      setAutocompleteAnchorRect(null);
+      return;
+    }
+    const r = anchorEl.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return;
+    setAutocompleteAnchorRect({
+      top: r.top,
+      left: r.left,
+      bottom: r.bottom,
+      width: r.width
+    });
+  }, [editSource]);
 
   useEffect(() => {
+    if (!isEditing || autocompleteSuggestions.length === 0) {
+      return;
+    }
+    const rafId = window.requestAnimationFrame(updateAutocompleteAnchorRect);
+    const gridEl = gridContainerRef.current;
+    window.addEventListener('resize', updateAutocompleteAnchorRect);
+    gridEl?.addEventListener('scroll', updateAutocompleteAnchorRect, { passive: true });
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', updateAutocompleteAnchorRect);
+      gridEl?.removeEventListener('scroll', updateAutocompleteAnchorRect);
+    };
+  }, [isEditing, autocompleteSuggestions.length, updateAutocompleteAnchorRect]);
+
+  const handleEditValueChange = useCallback((nextVal: string) => {
+    editDraftRef.current.value = nextVal;
+    setEditValue(nextVal);
+    setAutocompleteDismissed(false);
+    setAutocompleteIndex(-1);
+  }, []);
+
+  const handleAcceptAutocompleteSuggestion = useCallback((suggestion: string) => {
+    editDraftRef.current.value = suggestion;
+    setEditValue(suggestion);
+    setAutocompleteDismissed(true);
+    setAutocompleteIndex(-1);
+    window.requestAnimationFrame(() => {
+      const targetInput =
+        editDraftRef.current.source === 'formula'
+          ? formulaInputRef.current
+          : (editInputRef.current ?? formulaInputRef.current);
+      if (targetInput) {
+        targetInput.focus();
+        const len = suggestion.length;
+        try {
+          targetInput.setSelectionRange(len, len);
+        } catch {
+          // Ignore selection range errors on unsupported inputs
+        }
+      }
+    });
+  }, []);
+
+  const handleEditInputKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      const suggestions = autocompleteSuggestionsRef.current;
+      if (suggestions.length === 0) return;
+
+      const currentIdx = autocompleteIndexRef.current;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        e.stopPropagation();
+        setAutocompleteIndex(currentIdx < 0 ? 0 : (currentIdx + 1) % suggestions.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        setAutocompleteIndex(currentIdx <= 0 ? suggestions.length - 1 : currentIdx - 1);
+      } else if (e.key === 'Enter' && currentIdx >= 0 && currentIdx < suggestions.length) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleAcceptAutocompleteSuggestion(suggestions[currentIdx]);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setAutocompleteDismissed(true);
+        setAutocompleteIndex(-1);
+      }
+    },
+    [handleAcceptAutocompleteSuggestion]
+  );
+
+  useEffect(() => {
+    sheetsRef.current = sheets;
+    sheetKeysRef.current = sheetKeys;
+    activeSheetNameRef.current = activeSheetName;
+    selectionRef.current = selection;
+    selectionBoundsRef.current = selectionBounds;
+    editValueRef.current = editValue;
+    editSourceRef.current = editSource;
+    autocompleteSuggestionsRef.current = autocompleteSuggestions;
+    autocompleteIndexRef.current = activeAutocompleteIdx;
     isEditingRef.current = isEditing;
     selectedCellRef.current = selectedCell;
     selectionModeRef.current = selection.mode;
@@ -1427,6 +1853,7 @@ export function ExcelSpreadsheet({
     getCellValueRef.current = getCellValue;
     getColWidthRef.current = getColWidth;
     getManualRowHeightRef.current = getManualRowHeight;
+    receptionColsRef.current = receptionCols;
   });
 
   // Auto-launch role-aware guided tour once per user when landing workbook finishes loading
@@ -1893,8 +2320,12 @@ export function ExcelSpreadsheet({
       });
     } else if (e.key === 'Enter' || e.key === 'F2') {
       e.preventDefault();
-      const currentVal = getCellValue(selectedCell.row, selectedCell.col);
-      setEditValue(String(currentVal ?? ''));
+      const nextVal = String(getCellValue(selectedCell.row, selectedCell.col) ?? '');
+      editDraftRef.current = { active: true, value: nextVal, source: 'cell' };
+      setEditValue(nextVal);
+      setEditSource('cell');
+      setAutocompleteDismissed(false);
+      setAutocompleteIndex(-1);
       setIsEditing(true);
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
@@ -1907,7 +2338,11 @@ export function ExcelSpreadsheet({
         focusRow: selectedCell.row,
         focusCol: selectedCell.col
       });
+      editDraftRef.current = { active: true, value: e.key, source: 'cell' };
       setEditValue(e.key);
+      setEditSource('cell');
+      setAutocompleteDismissed(false);
+      setAutocompleteIndex(-1);
       setIsEditing(true);
     }
   };
@@ -1920,7 +2355,7 @@ export function ExcelSpreadsheet({
 
     if (shiftKey) {
       lastTouchTapRef.current = null;
-      if (isEditingRef.current) commitEditRef.current(0, 0);
+      if (editDraftRef.current.active) commitEditRef.current(0, 0);
       setSelection((prev) => ({
         mode: r === prev.anchorRow && c === prev.anchorCol ? 'cell' : 'range',
         anchorRow: prev.anchorRow,
@@ -1931,7 +2366,7 @@ export function ExcelSpreadsheet({
       return;
     }
 
-    if (isEditingRef.current) {
+    if (editDraftRef.current.active) {
       if (selectedCellRef.current.row === r && selectedCellRef.current.col === c) {
         return;
       }
@@ -1954,8 +2389,12 @@ export function ExcelSpreadsheet({
       now - lastTap.time < 380
     ) {
       lastTouchTapRef.current = null;
-      const val = getCellValueRef.current(r, c);
-      setEditValue(String(val ?? ''));
+      const val = String(getCellValueRef.current(r, c) ?? '');
+      editDraftRef.current = { active: true, value: val, source: 'cell' };
+      setEditValue(val);
+      setEditSource('cell');
+      setAutocompleteDismissed(false);
+      setAutocompleteIndex(-1);
       setIsEditing(true);
       return;
     }
@@ -1975,7 +2414,7 @@ export function ExcelSpreadsheet({
   const handleCellDoubleClick = useCallback((r: number, c: number, detail: number) => {
     if (justResizedRef.current || detail < 2) return;
     rootRef.current?.focus({ preventScroll: true });
-    if (isEditingRef.current) commitEditRef.current(0, 0);
+    if (editDraftRef.current.active) commitEditRef.current(0, 0);
     setSelection({
       mode: 'cell',
       anchorRow: r,
@@ -1983,8 +2422,12 @@ export function ExcelSpreadsheet({
       focusRow: r,
       focusCol: c
     });
-    const val = getCellValueRef.current(r, c);
-    setEditValue(String(val ?? ''));
+    const val = String(getCellValueRef.current(r, c) ?? '');
+    editDraftRef.current = { active: true, value: val, source: 'cell' };
+    setEditValue(val);
+    setEditSource('cell');
+    setAutocompleteDismissed(false);
+    setAutocompleteIndex(-1);
     setIsEditing(true);
   }, []);
 
@@ -2054,10 +2497,6 @@ export function ExcelSpreadsheet({
 
   const setEditInputRef = useCallback((el: HTMLInputElement | null) => {
     editInputRef.current = el;
-  }, []);
-
-  const setRowElementRef = useCallback((gridRowIdx: number, el: HTMLTableRowElement | null) => {
-    rowElementsRef.current[gridRowIdx] = el;
   }, []);
 
   const handleCommitEditBlur = useCallback(() => {
@@ -2349,16 +2788,6 @@ export function ExcelSpreadsheet({
 
     e.preventDefault();
     applyPasteTextToTarget(text, selection);
-  };
-
-  const parseJsonSafe = async (res: Response): Promise<Record<string, unknown>> => {
-    const text = await res.text();
-    if (!text) return {};
-    try {
-      return JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      return { error: text.slice(0, 200) };
-    }
   };
 
 
@@ -3210,15 +3639,15 @@ export function ExcelSpreadsheet({
   };
 
   // 7. Worksheet Renaming via Double-Click or Context Menu (strict focus & keystroke isolation)
-  const handleStartRename = (targetName: string) => {
-    if (isEditing) {
-      commitEdit(0, 0);
+  const handleStartRename = useCallback((targetName: string) => {
+    if (editDraftRef.current.active) {
+      commitEditRef.current(0, 0);
     }
     renameCommitGuardRef.current = false;
     setRenamingSheetName(targetName);
     setRenameInputValue(targetName);
     setContextMenu(null);
-  };
+  }, []);
 
   const handleCommitRename = async (oldName: string, rawNewName: string) => {
     if (renameCommitGuardRef.current) {
@@ -3330,117 +3759,120 @@ export function ExcelSpreadsheet({
   };
 
   // 8. Immediate Worksheet Deletion from Right-Click Context Menu (NO confirmation dialog)
-  const handleDeleteSheetImmediate = async (targetSheetName: string) => {
-    if (isDeletingSheet) return;
-    const currentKeys = sheetKeysRef.current;
+  const handleDeleteSheetImmediate = useCallback(
+    async (targetSheetName: string) => {
+      if (isDeletingSheet) return;
+      const currentKeys = sheetKeysRef.current;
 
-    if (currentKeys.length <= 1) {
-      setContextMenu(null);
-      setOperationError(`Cannot delete the only remaining worksheet in the ${workspace} workspace.`);
-      return;
-    }
-
-    const targetSheet = sheetsRef.current[targetSheetName];
-    if (!targetSheet?.id) {
-      setContextMenu(null);
-      setOperationError('Worksheet cannot be deleted because its server identifier is missing. Try reloading the workspace.');
-      return;
-    }
-
-    setOperationError(null);
-    setIsDeletingSheet(true);
-    setDeletingSheetName(targetSheetName);
-
-    try {
-      const res = await fetch('/api/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspace,
-          action: 'delete_sheet',
-          sheetId: targetSheet.id
-        })
-      });
-
-      const data = await parseJsonSafe(res);
-      if (!res.ok) {
-        throw new Error(
-          typeof data.error === 'string' && data.error
-            ? data.error
-            : 'Failed to delete worksheet.'
-        );
+      if (currentKeys.length <= 1) {
+        setContextMenu(null);
+        setOperationError(`Cannot delete the only remaining worksheet in the ${workspace} workspace.`);
+        return;
       }
 
-      // Discard any unsaved pending edits tied to the deleted worksheet ID
-      const nextDirtyCells = { ...dirtyCellsRef.current };
-      let dirtyCellsChanged = false;
-      for (const [k, edit] of Object.entries(nextDirtyCells)) {
-        if (edit.sheetId === targetSheet.id || edit.sheetName === targetSheetName) {
-          delete nextDirtyCells[k];
-          dirtyCellsChanged = true;
-        }
-      }
-      if (dirtyCellsChanged) {
-        dirtyCellsRef.current = nextDirtyCells;
-        setDirtyCells(nextDirtyCells);
+      const targetSheet = sheetsRef.current[targetSheetName];
+      if (!targetSheet?.id) {
+        setContextMenu(null);
+        setOperationError('Worksheet cannot be deleted because its server identifier is missing. Try reloading the workspace.');
+        return;
       }
 
-      const nextDirtyHeaders = { ...dirtyHeadersRef.current };
-      let dirtyHeadersChanged = false;
-      for (const [k, edit] of Object.entries(nextDirtyHeaders)) {
-        if (edit.sheetId === targetSheet.id || edit.sheetName === targetSheetName) {
-          delete nextDirtyHeaders[k];
-          dirtyHeadersChanged = true;
-        }
-      }
-      if (dirtyHeadersChanged) {
-        dirtyHeadersRef.current = nextDirtyHeaders;
-        setDirtyHeaders(nextDirtyHeaders);
-      }
+      setOperationError(null);
+      setIsDeletingSheet(true);
+      setDeletingSheetName(targetSheetName);
 
-      const deletedIdx = currentKeys.indexOf(targetSheetName);
-      const remainingKeys = currentKeys.filter((k) => k !== targetSheetName);
-
-      setSheets((prev) => {
-        const orderedRemaining = Object.keys(prev)
-          .filter((k) => k !== targetSheetName)
-          .sort((a, b) => (prev[a]?.tabOrder ?? 0) - (prev[b]?.tabOrder ?? 0));
-        const next: Record<string, SheetState> = {};
-        orderedRemaining.forEach((key, idx) => {
-          next[key] = { ...prev[key], tabOrder: idx };
+      try {
+        const res = await fetch('/api/records', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspace,
+            action: 'delete_sheet',
+            sheetId: targetSheet.id
+          })
         });
-        return next;
-      });
 
-      if (activeSheetName === targetSheetName && remainingKeys.length > 0) {
-        const adjacentIdx = Math.min(deletedIdx >= 0 ? deletedIdx : 0, remainingKeys.length - 1);
-        const adjacentSheetName = remainingKeys[adjacentIdx];
-        const adjacentLatestRow = findLatestRecordGridRow(sheetsRef.current[adjacentSheetName]);
-        setActiveSheetName(adjacentSheetName);
-        setSelection({
-          mode: 'cell',
-          anchorRow: adjacentLatestRow,
-          anchorCol: 0,
-          focusRow: adjacentLatestRow,
-          focusCol: 0
+        const data = await parseJsonSafe(res);
+        if (!res.ok) {
+          throw new Error(
+            typeof data.error === 'string' && data.error
+              ? data.error
+              : 'Failed to delete worksheet.'
+          );
+        }
+
+        // Discard any unsaved pending edits tied to the deleted worksheet ID
+        const nextDirtyCells = { ...dirtyCellsRef.current };
+        let dirtyCellsChanged = false;
+        for (const [k, edit] of Object.entries(nextDirtyCells)) {
+          if (edit.sheetId === targetSheet.id || edit.sheetName === targetSheetName) {
+            delete nextDirtyCells[k];
+            dirtyCellsChanged = true;
+          }
+        }
+        if (dirtyCellsChanged) {
+          dirtyCellsRef.current = nextDirtyCells;
+          setDirtyCells(nextDirtyCells);
+        }
+
+        const nextDirtyHeaders = { ...dirtyHeadersRef.current };
+        let dirtyHeadersChanged = false;
+        for (const [k, edit] of Object.entries(nextDirtyHeaders)) {
+          if (edit.sheetId === targetSheet.id || edit.sheetName === targetSheetName) {
+            delete nextDirtyHeaders[k];
+            dirtyHeadersChanged = true;
+          }
+        }
+        if (dirtyHeadersChanged) {
+          dirtyHeadersRef.current = nextDirtyHeaders;
+          setDirtyHeaders(nextDirtyHeaders);
+        }
+
+        const deletedIdx = currentKeys.indexOf(targetSheetName);
+        const remainingKeys = currentKeys.filter((k) => k !== targetSheetName);
+
+        setSheets((prev) => {
+          const orderedRemaining = Object.keys(prev)
+            .filter((k) => k !== targetSheetName)
+            .sort((a, b) => (prev[a]?.tabOrder ?? 0) - (prev[b]?.tabOrder ?? 0));
+          const next: Record<string, SheetState> = {};
+          orderedRemaining.forEach((key, idx) => {
+            next[key] = { ...prev[key], tabOrder: idx };
+          });
+          return next;
         });
-        setScrollPositionRequest((prev) => ({
-          sheetName: adjacentSheetName,
-          targetRow: adjacentLatestRow,
-          nonce: prev.nonce + 1
-        }));
-      }
 
-      setContextMenu(null);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to delete worksheet.';
-      setOperationError(msg);
-      setContextMenu(null);
-    } finally {
-      setIsDeletingSheet(false);
-      setDeletingSheetName(null);
-    }
-  };
+        if (activeSheetNameRef.current === targetSheetName && remainingKeys.length > 0) {
+          const adjacentIdx = Math.min(deletedIdx >= 0 ? deletedIdx : 0, remainingKeys.length - 1);
+          const adjacentSheetName = remainingKeys[adjacentIdx];
+          const adjacentLatestRow = findLatestRecordGridRow(sheetsRef.current[adjacentSheetName]);
+          setActiveSheetName(adjacentSheetName);
+          setSelection({
+            mode: 'cell',
+            anchorRow: adjacentLatestRow,
+            anchorCol: 0,
+            focusRow: adjacentLatestRow,
+            focusCol: 0
+          });
+          setScrollPositionRequest((prev) => ({
+            sheetName: adjacentSheetName,
+            targetRow: adjacentLatestRow,
+            nonce: prev.nonce + 1
+          }));
+        }
+
+        setContextMenu(null);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Failed to delete worksheet.';
+        setOperationError(msg);
+        setContextMenu(null);
+      } finally {
+        setIsDeletingSheet(false);
+        setDeletingSheetName(null);
+      }
+    },
+    [isDeletingSheet, workspace]
+  );
 
   // 9. Worksheet Reordering via Pointer Events + Server Persistence
   const commitSheetOrder = useCallback(
@@ -3700,7 +4132,7 @@ export function ExcelSpreadsheet({
 
   const openCellContextMenu = useCallback(
     (row: number, col: number, x: number, y: number) => {
-      if (isEditing) commitEdit(0, 0);
+      if (isEditingRef.current) commitEditRef.current(0, 0);
       setSelection({
         mode: 'cell',
         anchorRow: row,
@@ -3723,16 +4155,17 @@ export function ExcelSpreadsheet({
         canPaste
       });
     },
-    [isEditing, commitEdit, getCellValue]
+    [getCellValue]
   );
 
   const openRowContextMenu = useCallback(
     (gridRowIdx: number, x: number, y: number) => {
-      if (isEditing) commitEdit(0, 0);
-      const maxColIdx = totalCols - 1;
-      const isHighlighted = isRowHeaderHighlighted(gridRowIdx);
-      const rMin = isHighlighted ? selectionBounds.rMin : gridRowIdx;
-      const rMax = isHighlighted ? selectionBounds.rMax : gridRowIdx;
+      if (isEditingRef.current) commitEditRef.current(0, 0);
+      const maxColIdx = totalColsRef.current - 1;
+      const curBounds = selectionBoundsRef.current;
+      const isHighlighted = gridRowIdx >= curBounds.rMin && gridRowIdx <= curBounds.rMax;
+      const rMin = isHighlighted ? curBounds.rMin : gridRowIdx;
+      const rMax = isHighlighted ? curBounds.rMax : gridRowIdx;
 
       setSelection({
         mode: 'row',
@@ -3769,16 +4202,17 @@ export function ExcelSpreadsheet({
         canPaste
       });
     },
-    [isEditing, commitEdit, totalCols, isRowHeaderHighlighted, selectionBounds, getCellValue]
+    [getCellValue]
   );
 
   const openColContextMenu = useCallback(
     (cIdx: number, x: number, y: number) => {
-      if (isEditing) commitEdit(0, 0);
-      const maxRowIdx = displayRowsCount - 1;
-      const isHighlighted = isColHeaderHighlighted(cIdx);
-      const cMin = isHighlighted ? selectionBounds.cMin : cIdx;
-      const cMax = isHighlighted ? selectionBounds.cMax : cIdx;
+      if (isEditingRef.current) commitEditRef.current(0, 0);
+      const maxRowIdx = displayRowsCountRef.current - 1;
+      const curBounds = selectionBoundsRef.current;
+      const isHighlighted = cIdx >= curBounds.cMin && cIdx <= curBounds.cMax;
+      const cMin = isHighlighted ? curBounds.cMin : cIdx;
+      const cMax = isHighlighted ? curBounds.cMax : cIdx;
 
       setSelection({
         mode: 'col',
@@ -3799,10 +4233,12 @@ export function ExcelSpreadsheet({
         if (hasContent) break;
       }
 
+      const activeSheet = sheetsRef.current[activeSheetNameRef.current];
+      const headerLen = activeSheet?.headers.length ?? 0;
       const label = cMin === cMax ? `Column ${getColumnLetter(cMin)}` : `Columns ${getColumnLetter(cMin)}–${getColumnLetter(cMax)}`;
       const canPaste = Boolean(internalClipboardRef.current?.text);
-      const canInsert = currentSheet.headers.length < MAX_COLS_LIMIT;
-      const canDelete = currentSheet.headers.length > 1;
+      const canInsert = headerLen < MAX_COLS_LIMIT;
+      const canDelete = headerLen > 1;
 
       setContextMenu({
         kind: 'col',
@@ -3817,7 +4253,7 @@ export function ExcelSpreadsheet({
         canDelete
       });
     },
-    [isEditing, commitEdit, displayRowsCount, isColHeaderHighlighted, selectionBounds, getCellValue, currentSheet.headers.length]
+    [getCellValue]
   );
 
   const startGridLongPress = useCallback(
@@ -4265,7 +4701,7 @@ export function ExcelSpreadsheet({
 
   // Row height resize via Pointer Events + rAF DOM updates (commits React state once on pointerup)
   const handleRowResizeStart = useCallback(
-    (gridRowIdx: number, e: React.PointerEvent<HTMLDivElement>) => {
+    (gridRowIdx: number, e: React.PointerEvent<HTMLElement>) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       e.stopPropagation();
       e.preventDefault();
@@ -4277,7 +4713,7 @@ export function ExcelSpreadsheet({
       const targetSheetKey = activeDimKeyRef.current;
       const targetRow = gridRowIdx;
       const startY = e.clientY;
-      const thEl = e.currentTarget.parentElement;
+      const thEl = (e.target as HTMLElement | null)?.closest('th') ?? e.currentTarget.parentElement;
       const measuredHeight = thEl ? thEl.getBoundingClientRect().height : 0;
       const fallbackHeight =
         targetRow === 0 ? DEFAULT_HEADER_ROW_HEIGHT : DEFAULT_DATA_ROW_HEIGHT;
@@ -4298,7 +4734,9 @@ export function ExcelSpreadsheet({
             trEl.style.height = `${nextHeight}px`;
           }
         } else {
-          const trEl = rowElementsRef.current[targetRow];
+          const trEl =
+            rowElementsRef.current[targetRow] ??
+            (tbodyRef.current?.children[targetRow - 1] as HTMLTableRowElement | undefined);
           if (trEl) {
             trEl.style.height = `${nextHeight}px`;
           }
@@ -4401,34 +4839,36 @@ export function ExcelSpreadsheet({
       onPaste={handlePaste}
       tabIndex={0}
     >
-      {/* 1. Application Toolbar / Header (Responsive: single row on md+, clean compact adaptive bar below md) */}
-      <div className="min-h-12 md:h-12 px-2.5 sm:px-4 py-1.5 md:py-0 bg-[var(--chrome-bg)] text-[var(--control-text)] border-b border-[var(--chrome-border)] flex flex-wrap md:flex-nowrap items-center justify-between gap-x-2 sm:gap-x-3 gap-y-1.5 shrink-0">
-        {/* Top-Left: Official MK Eye Center Logo directly, NO background container */}
-        <div className="flex items-center shrink-0" data-tour="brand-header">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/assets/aistudio/mk_long_logo_a5863dd4.png"
-            alt="MK Eye Center Logo"
-            className="h-6 sm:h-7 md:h-8 w-auto max-w-[104px] sm:max-w-[155px] md:max-w-none object-contain dark:invert dark:hue-rotate-180 dark:brightness-110 dark:contrast-110"
-            referrerPolicy="no-referrer"
-          />
+      {/* 1. Application Toolbar / Header (Frosted Glass Chrome — Centered logo on mobile, left-aligned on md+) */}
+      <div className="min-h-12 md:h-12 px-2.5 sm:px-4 py-1.5 md:py-0 mk-glass-chrome text-[var(--control-text)] flex flex-wrap md:flex-nowrap items-center justify-between gap-x-2 sm:gap-x-3 gap-y-1.5 shrink-0 relative z-20">
+        {/* Centered on mobile (< md), left-aligned on desktop (md+); NO background container */}
+        <div className="w-full md:w-auto flex items-center justify-center md:justify-start shrink-0 py-0.5 md:py-0">
+          <div className="flex items-center justify-center shrink-0" data-tour="brand-header">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/assets/aistudio/mk_long_logo_a5863dd4.png"
+              alt="MK Eye Center Logo"
+              className="h-6 sm:h-7 md:h-8 w-auto max-w-[148px] sm:max-w-[170px] md:max-w-none object-contain dark:invert dark:hue-rotate-180 dark:brightness-110 dark:contrast-110"
+              referrerPolicy="no-referrer"
+            />
+          </div>
         </div>
 
-        {/* Workspace Switcher + Save Status (inline on md+, neat compact secondary row below md when present) */}
+        {/* Workspace Switcher + Save Status (compact mobile row paired alongside action controls; inline on md+) */}
         {hasMobileSecondaryRow && (
-          <div className="order-last w-full md:order-none md:w-auto md:ml-auto flex flex-wrap items-center justify-between md:justify-end gap-2 border-t border-[var(--chrome-border)] pt-1.5 md:border-t-0 md:pt-0">
-            {/* Admin workspace switcher if applicable */}
+          <div className="order-2 md:order-none flex-1 md:flex-initial md:w-auto md:ml-auto flex flex-wrap items-center justify-start md:justify-end gap-1.5 sm:gap-2 min-w-0">
+            {/* Admin workspace switcher matching LoginCard segmented pill */}
             {visibleWorkspaces.length > 1 && (
               <div
                 data-tour="workspace-switcher"
-                className="flex items-center bg-[var(--control-bg)] p-0.5 rounded-lg border border-[var(--control-border)] text-xs shrink-0"
+                className="flex items-center bg-slate-900/[0.06] dark:bg-white/[0.08] backdrop-blur-md p-0.5 rounded-full border border-white/80 dark:border-white/15 shadow-[inset_0_1px_2px_rgba(15,23,42,0.06)] text-xs shrink-0"
               >
                 <button
                   type="button"
                   onClick={() => onWorkspaceSwitchRequest('reception')}
-                  className={`min-h-[30px] md:min-h-0 px-2.5 sm:px-3 py-1 font-semibold text-[11px] sm:text-xs rounded-md cursor-pointer touch-manipulation ${
+                  className={`min-h-[30px] md:min-h-[26px] px-2.5 sm:px-3.5 py-0.5 font-semibold text-[11px] sm:text-xs rounded-full cursor-pointer touch-manipulation transition-all duration-150 motion-reduce:transition-none ${
                     activeWorkspace === 'reception'
-                      ? 'bg-blue-600 text-white shadow-xs'
+                      ? 'bg-gradient-to-b from-blue-500 to-blue-600 text-white shadow-[0_2px_8px_rgba(37,99,235,0.34),inset_0_1px_0_rgba(255,255,255,0.35)]'
                       : 'text-[var(--control-muted)] hover:text-[var(--control-text)]'
                   }`}
                 >
@@ -4437,9 +4877,9 @@ export function ExcelSpreadsheet({
                 <button
                   type="button"
                   onClick={() => onWorkspaceSwitchRequest('doctor')}
-                  className={`min-h-[30px] md:min-h-0 px-2.5 sm:px-3 py-1 font-semibold text-[11px] sm:text-xs rounded-md cursor-pointer touch-manipulation ${
+                  className={`min-h-[30px] md:min-h-[26px] px-2.5 sm:px-3.5 py-0.5 font-semibold text-[11px] sm:text-xs rounded-full cursor-pointer touch-manipulation transition-all duration-150 motion-reduce:transition-none ${
                     activeWorkspace === 'doctor'
-                      ? 'bg-blue-600 text-white shadow-xs'
+                      ? 'bg-gradient-to-b from-blue-500 to-blue-600 text-white shadow-[0_2px_8px_rgba(37,99,235,0.34),inset_0_1px_0_rgba(255,255,255,0.35)]'
                       : 'text-[var(--control-muted)] hover:text-[var(--control-text)]'
                   }`}
                 >
@@ -4451,7 +4891,7 @@ export function ExcelSpreadsheet({
             {/* Save & Conflict Status Notice */}
             {hasStatusFeedback && (
               <div
-                className="flex items-center gap-2 text-[11px] ml-auto md:ml-0 md:mr-1 min-w-0"
+                className="flex items-center gap-1.5 text-[11px] md:mr-1 min-w-0"
                 role="status"
                 aria-live="polite"
               >
@@ -4472,7 +4912,7 @@ export function ExcelSpreadsheet({
                 {!isLoading && saveStatus === 'error' && (
                   <span
                     title={saveError || 'Save failed'}
-                    className="text-red-600 dark:text-red-400 font-medium max-w-[160px] sm:max-w-[200px] truncate"
+                    className="text-red-600 dark:text-red-400 font-medium max-w-[140px] sm:max-w-[200px] truncate"
                   >
                     {saveError || 'Save failed'}
                   </span>
@@ -4482,7 +4922,7 @@ export function ExcelSpreadsheet({
                     type="button"
                     onClick={() => void handleReloadLatest()}
                     disabled={isReloading}
-                    className="min-h-[28px] md:min-h-0 px-2.5 py-0.5 bg-red-600 text-white rounded-md font-medium hover:bg-red-700 cursor-pointer disabled:opacity-50 text-[11px] shrink-0 touch-manipulation"
+                    className="mk-glass-btn-danger min-h-[28px] md:min-h-[24px] px-2.5 py-0.5 font-semibold cursor-pointer disabled:opacity-50 text-[11px] shrink-0 touch-manipulation"
                   >
                     {isReloading ? 'Reloading...' : 'Reload'}
                   </button>
@@ -4494,7 +4934,7 @@ export function ExcelSpreadsheet({
               <button
                 type="button"
                 onClick={onRequestInitialImport}
-                className="min-h-[30px] md:min-h-0 px-2.5 sm:px-3 py-1.5 font-semibold text-white bg-emerald-700 hover:bg-emerald-600 rounded-lg cursor-pointer text-[11px] sm:text-xs whitespace-nowrap touch-manipulation"
+                className="mk-glass-btn-success min-h-[30px] md:min-h-[28px] px-3 sm:px-3.5 py-1 font-semibold cursor-pointer text-[11px] sm:text-xs whitespace-nowrap touch-manipulation"
               >
                 Import Workbooks
               </button>
@@ -4503,16 +4943,16 @@ export function ExcelSpreadsheet({
         )}
 
         {/* Primary Right Controls: Tour & Theme Icons, Save and Export */}
-        <div className={`flex items-center gap-1.5 sm:gap-2 ${hasMobileSecondaryRow ? 'ml-auto md:ml-0' : 'ml-auto'}`}>
+        <div className="order-3 md:order-none flex items-center gap-1.5 sm:gap-2 ml-auto md:ml-0 shrink-0">
           <div className="flex items-center gap-0.5 sm:gap-1" data-tour="utility-controls">
             <button
               type="button"
               onClick={() => setIsTourOpen(true)}
               aria-label="Open workspace guided tour"
               title="Open guided tour"
-              className="min-w-[34px] min-h-[34px] md:min-w-0 md:min-h-0 p-1.5 bg-transparent border-0 shadow-none text-slate-600 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white hover:scale-110 transition-transform duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--selection-ring)] rounded-sm cursor-pointer shrink-0 flex items-center justify-center touch-manipulation"
+              className="min-w-[34px] min-h-[34px] md:min-w-[30px] md:min-h-[30px] p-1.5 rounded-full bg-transparent hover:bg-white/65 dark:hover:bg-white/10 border border-transparent hover:border-white/80 dark:hover:border-white/15 text-slate-600 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white transition-all duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--selection-ring)] cursor-pointer shrink-0 flex items-center justify-center touch-manipulation"
             >
-              <HelpCircle className="w-[18px] h-[18px]" />
+              <HelpCircle className="w-[17px] h-[17px]" />
             </button>
             <SpreadsheetThemeToggle overrideTheme={theme} onOverrideToggle={onToggleTheme} />
           </div>
@@ -4522,7 +4962,7 @@ export function ExcelSpreadsheet({
               type="button"
               onClick={() => void handleSave()}
               disabled={saveStatus === 'saving' || isLoading || !currentSheet.id}
-              className="min-h-[34px] md:min-h-0 px-2.5 sm:px-3.5 md:px-4 py-1.5 font-semibold text-white bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-lg disabled:opacity-50 cursor-pointer flex items-center gap-1.5 text-[11px] sm:text-xs whitespace-nowrap touch-manipulation"
+              className="mk-glass-btn-primary min-h-[34px] md:min-h-[30px] px-3 sm:px-4 md:px-4.5 py-1 font-semibold disabled:opacity-50 cursor-pointer flex items-center gap-1.5 text-[11px] sm:text-xs whitespace-nowrap touch-manipulation"
             >
               {saveStatus === 'saving' ? 'Saving...' : 'Save'}
             </button>
@@ -4531,7 +4971,7 @@ export function ExcelSpreadsheet({
               type="button"
               onClick={() => void handleDirectExport()}
               disabled={isExporting || sheetKeys.length === 0}
-              className="min-h-[34px] md:min-h-0 px-2.5 sm:px-3.5 md:px-4 py-1.5 font-semibold text-[var(--control-text)] bg-[var(--control-bg)] hover:bg-[var(--control-bg-hover)] border border-[var(--control-border)] rounded-lg disabled:opacity-50 cursor-pointer text-[11px] sm:text-xs whitespace-nowrap touch-manipulation"
+              className="mk-glass-btn-secondary min-h-[34px] md:min-h-[30px] px-3 sm:px-4 md:px-4.5 py-1 font-semibold disabled:opacity-50 cursor-pointer text-[11px] sm:text-xs whitespace-nowrap touch-manipulation"
             >
               {isExporting ? 'Exporting...' : 'Export'}
             </button>
@@ -4539,34 +4979,72 @@ export function ExcelSpreadsheet({
         </div>
       </div>
 
-      {/* 2. Formula & Cell Address Bar */}
+      {/* 2. Formula & Cell Address Bar (Pill-shaped Glass Inputs) */}
       <div
         data-tour="formula-bar"
-        className="min-h-10 sm:h-10 px-2 sm:px-3 py-1 sm:py-0 bg-[var(--formula-bg)] border-b border-[var(--chrome-border)] flex items-center gap-1.5 sm:gap-2 shrink-0 text-xs"
+        className="min-h-10 sm:h-10 px-2 sm:px-3 py-1 sm:py-0 mk-glass-formula-bar flex items-center gap-1.5 sm:gap-2 shrink-0 text-xs relative z-10"
       >
-        <div className="min-w-[52px] sm:min-w-[72px] max-w-[96px] sm:max-w-[140px] truncate h-8 sm:h-7 px-2 sm:px-2.5 bg-[var(--formula-address-bg)] border border-[var(--control-border)] rounded-md flex items-center justify-center font-mono font-semibold tabular-nums text-[var(--control-text)] text-[11px] sm:text-xs select-none shrink-0">
+        <div className="mk-glass-pill-badge min-w-[52px] sm:min-w-[72px] max-w-[96px] sm:max-w-[140px] truncate h-8 sm:h-7 px-2.5 sm:px-3 flex items-center justify-center font-mono font-semibold tabular-nums text-[var(--control-text)] text-[11px] sm:text-xs select-none shrink-0">
           {selectionAddressLabel}
         </div>
         <div
-          className="h-8 sm:h-7 px-1.5 sm:px-2 bg-[var(--control-bg)] border border-[var(--control-border)] rounded-md flex items-center justify-center text-[var(--control-muted)] font-serif italic text-[12px] sm:text-[13px] select-none shrink-0"
+          className="mk-glass-pill-badge h-8 sm:h-7 px-2 sm:px-2.5 flex items-center justify-center text-[var(--control-muted)] font-serif italic text-[12px] sm:text-[13px] select-none shrink-0"
           aria-hidden="true"
         >
           fx
         </div>
         <input
+          ref={formulaInputRef}
           type="text"
           aria-label="Cell value or formula input"
           value={isEditing ? editValue : String(getCellValue(selectedCell.row, selectedCell.col) ?? '')}
           disabled={!currentSheet.id}
           onChange={(e) => {
-            if (!isEditing) {
+            if (!editDraftRef.current.active) {
+              editDraftRef.current = { active: true, value: e.target.value, source: 'formula' };
+              setEditSource('formula');
               setIsEditing(true);
             }
-            setEditValue(e.target.value);
+            handleEditValueChange(e.target.value);
           }}
           onKeyDown={(e) => {
             if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 's') {
               e.stopPropagation();
+            }
+            if (autocompleteSuggestions.length > 0) {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setAutocompleteIndex(
+                  activeAutocompleteIdx < 0
+                    ? 0
+                    : (activeAutocompleteIdx + 1) % autocompleteSuggestions.length
+                );
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setAutocompleteIndex(
+                  activeAutocompleteIdx <= 0
+                    ? autocompleteSuggestions.length - 1
+                    : activeAutocompleteIdx - 1
+                );
+                return;
+              }
+              if (
+                e.key === 'Enter' &&
+                activeAutocompleteIdx >= 0 &&
+                activeAutocompleteIdx < autocompleteSuggestions.length
+              ) {
+                e.preventDefault();
+                handleAcceptAutocompleteSuggestion(autocompleteSuggestions[activeAutocompleteIdx]);
+                return;
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                setAutocompleteDismissed(true);
+                setAutocompleteIndex(-1);
+                return;
+              }
             }
             if (e.key === 'Enter') {
               e.preventDefault();
@@ -4583,11 +5061,11 @@ export function ExcelSpreadsheet({
             }
           }}
           onBlur={() => {
-            if (isEditing) {
+            if (editDraftRef.current.active) {
               commitEdit(0, 0);
             }
           }}
-          className="flex-1 min-w-0 h-8 sm:h-7 px-2.5 sm:px-3 bg-[var(--formula-input-bg)] border border-[var(--control-border)] rounded-md text-[var(--control-text)] text-base sm:text-xs font-normal outline-none focus:border-[var(--selection-ring)] focus:ring-1 focus:ring-[var(--selection-ring)] disabled:opacity-50"
+          className="mk-glass-pill-input flex-1 min-w-0 h-8 sm:h-7 px-3.5 sm:px-4 text-base sm:text-xs font-normal disabled:opacity-50"
         />
         {isEditing && (
           <div className="flex items-center gap-1 sm:hidden shrink-0">
@@ -4600,7 +5078,7 @@ export function ExcelSpreadsheet({
               }}
               aria-label="Confirm cell edit"
               title="Confirm edit"
-              className="h-8 w-8 flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-500 cursor-pointer touch-manipulation"
+              className="mk-glass-btn-primary h-8 w-8 flex items-center justify-center cursor-pointer touch-manipulation"
             >
               <Check className="w-4 h-4" />
             </button>
@@ -4613,7 +5091,7 @@ export function ExcelSpreadsheet({
               }}
               aria-label="Cancel cell edit"
               title="Cancel edit"
-              className="h-8 w-8 flex items-center justify-center rounded-md bg-[var(--control-bg)] border border-[var(--control-border)] text-[var(--control-text)] hover:bg-[var(--control-bg-hover)] cursor-pointer touch-manipulation"
+              className="mk-glass-btn-secondary h-8 w-8 flex items-center justify-center cursor-pointer touch-manipulation"
             >
               <X className="w-4 h-4" />
             </button>
@@ -4623,14 +5101,14 @@ export function ExcelSpreadsheet({
 
       {/* 2.1 Load Error Strip (if Supabase load fails) */}
       {loadError && (
-        <div className="bg-red-50 dark:bg-red-950/60 border-b border-red-200 dark:border-red-800 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs text-red-800 dark:text-red-200 shrink-0">
+        <div className="bg-red-50/90 dark:bg-red-950/75 backdrop-blur-md border-b border-red-200/80 dark:border-red-800/70 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs text-red-800 dark:text-red-200 shrink-0">
           <span className="min-w-0 flex-1 break-words">{loadError}</span>
           {onReloadWorkspace && (
             <button
               type="button"
               onClick={() => void handleReloadLatest()}
               disabled={isReloading}
-              className="px-2.5 py-1 bg-red-600 text-white rounded-md font-medium hover:bg-red-700 cursor-pointer shrink-0 touch-manipulation"
+              className="mk-glass-btn-danger px-3 py-1 font-semibold cursor-pointer shrink-0 touch-manipulation"
             >
               Retry
             </button>
@@ -4640,12 +5118,12 @@ export function ExcelSpreadsheet({
 
       {/* 2.1b Worksheet Operation / Sign-Out Error Strip */}
       {operationError && (
-        <div className="bg-red-50 dark:bg-red-950/60 border-b border-red-200 dark:border-red-800 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs text-red-800 dark:text-red-200 shrink-0" role="alert">
+        <div className="bg-red-50/90 dark:bg-red-950/75 backdrop-blur-md border-b border-red-200/80 dark:border-red-800/70 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs text-red-800 dark:text-red-200 shrink-0" role="alert">
           <span className="min-w-0 flex-1 break-words">{operationError}</span>
           <button
             type="button"
             onClick={() => setOperationError(null)}
-            className="px-2 py-0.5 text-[11px] font-medium underline cursor-pointer shrink-0 touch-manipulation"
+            className="px-2.5 py-0.5 text-[11px] font-medium underline cursor-pointer shrink-0 touch-manipulation"
           >
             Dismiss
           </button>
@@ -4655,10 +5133,10 @@ export function ExcelSpreadsheet({
       {/* 2.2 Admin Import Result / Error Strip */}
       {user?.role === 'admin' && importNotice && (
         <div
-          className={`border-b px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0 ${
+          className={`border-b backdrop-blur-md px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0 ${
             importNotice.type === 'error'
-              ? 'bg-red-50 border-red-200 text-red-800 dark:bg-red-950/60 dark:border-red-800 dark:text-red-200'
-              : 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-200'
+              ? 'bg-red-50/90 border-red-200/80 text-red-800 dark:bg-red-950/75 dark:border-red-800/70 dark:text-red-200'
+              : 'bg-emerald-50/90 border-emerald-200/80 text-emerald-900 dark:bg-emerald-950/75 dark:border-emerald-800/70 dark:text-emerald-200'
           }`}
         >
           <span className="min-w-0 flex-1 break-words">{importNotice.message}</span>
@@ -4666,7 +5144,7 @@ export function ExcelSpreadsheet({
             <button
               type="button"
               onClick={onDismissImportNotice}
-              className="px-2 py-0.5 text-[11px] font-medium underline cursor-pointer shrink-0 touch-manipulation"
+              className="px-2.5 py-0.5 text-[11px] font-medium underline cursor-pointer shrink-0 touch-manipulation"
             >
               Dismiss
             </button>
@@ -4674,11 +5152,11 @@ export function ExcelSpreadsheet({
         </div>
       )}
 
-      {/* 3. Main Spreadsheet Grid Viewport (Rounded Cell Tiles + Negative-Space Gutters) */}
+      {/* 3. Main Spreadsheet Grid Viewport (Rounded Glass Cell Tiles + 2px Negative-Space Gutters) */}
       <div
         ref={gridContainerRef}
         data-tour="grid-viewport"
-        className="flex-1 min-h-0 overflow-auto touch-pan-x touch-pan-y overscroll-contain bg-[var(--grid-canvas)] mk-spreadsheet-scroll relative outline-none"
+        className="flex-1 min-h-0 overflow-auto touch-pan-x touch-pan-y overscroll-contain mk-glass-viewport mk-spreadsheet-scroll relative outline-none"
       >
         {!isLoading && sheetKeys.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-[var(--control-muted)] p-6 text-center">
@@ -4692,7 +5170,7 @@ export function ExcelSpreadsheet({
               <button
                 type="button"
                 onClick={onRequestInitialImport}
-                className="mt-4 px-4 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition cursor-pointer"
+                className="mk-glass-btn-primary mt-4 px-5 py-2 text-xs font-semibold cursor-pointer"
               >
                 Import Initial Workbooks (Reception &amp; Doctor)
               </button>
@@ -4702,11 +5180,11 @@ export function ExcelSpreadsheet({
           <table
             ref={tableRef}
             style={{ width: `${totalTableWidth}px` }}
-            className="border-separate border-spacing-[2px] table-fixed text-xs bg-[var(--grid-canvas)]"
+            className="border-separate border-spacing-[2px] table-fixed text-xs bg-transparent"
           >
             <colgroup>
               <col style={{ width: `${rowHeaderWidth}px` }} />
-              {Array.from({ length: totalCols }).map((_, cIdx) => (
+              {colIndices.map((cIdx) => (
                 <col
                   key={cIdx}
                   ref={(el) => {
@@ -4718,22 +5196,22 @@ export function ExcelSpreadsheet({
             </colgroup>
 
             <thead ref={theadRef} className="sticky top-0 z-30 bg-[var(--grid-canvas)]">
-              {/* Row 0: Column Letter Tiles (top rounded corners ~8px, square bottom corners) */}
+              {/* Row 0: Column Letter Tiles (top rounded corners ~8px, subtle bottom corners) */}
               <tr style={{ height: `${DEFAULT_COL_LETTER_ROW_HEIGHT}px` }}>
                 <th
                   onClick={handleSelectAllClick}
                   title="Select entire worksheet"
                   style={{ width: `${rowHeaderWidth}px`, minWidth: `${rowHeaderWidth}px` }}
-                  className={`h-[28px] sticky left-0 z-50 rounded-[6px] select-none text-center cursor-pointer touch-manipulation shadow-[-4px_0_0_0_var(--grid-canvas)] ${
+                  className={`h-[28px] sticky left-0 z-50 rounded-[7px] select-none text-center cursor-pointer touch-manipulation mk-glass-row-sticky ${
                     selection.mode === 'all'
-                      ? 'bg-[var(--header-tile-active)] text-[var(--header-text-active)]'
-                      : 'bg-[var(--header-tile-bg)] hover:bg-[var(--header-tile-hover)] text-[var(--header-text)]'
+                      ? 'mk-glass-header-tile-active'
+                      : 'mk-glass-header-tile'
                   }`}
                 >
                   <span className="text-[10px] leading-none">◢</span>
                 </th>
 
-                {Array.from({ length: totalCols }).map((_, cIdx) => {
+                {colIndices.map((cIdx) => {
                   const width = getColWidth(cIdx);
                   const isColSelected = isColHeaderHighlighted(cIdx);
                   return (
@@ -4754,12 +5232,12 @@ export function ExcelSpreadsheet({
                           startGridLongPress(e, (x, y) => openColContextMenu(cIdx, x, y));
                         }
                       }}
-                      className={`h-[28px] text-center text-[11px] tracking-wide select-none relative cursor-pointer touch-manipulation rounded-t-[8px] rounded-b-none ${
+                      className={`h-[28px] text-center text-[11px] tracking-wide select-none relative cursor-pointer touch-manipulation rounded-t-[8px] rounded-b-[3px] ${
                         isColSelected && isFullColSelectionMode
-                          ? 'bg-[var(--header-tile-active)] text-[var(--header-text-active)] font-semibold'
+                          ? 'mk-glass-header-tile-active font-semibold'
                           : isColSelected
-                            ? 'bg-[var(--header-tile-range)] text-[var(--col-title-text)] font-semibold'
-                            : 'bg-[var(--header-tile-bg)] hover:bg-[var(--header-tile-hover)] font-medium text-[var(--header-text)]'
+                            ? 'mk-glass-header-tile-range font-semibold'
+                            : 'mk-glass-header-tile font-medium'
                       }`}
                     >
                       <span>{getColumnLetter(cIdx)}</span>
@@ -4790,12 +5268,12 @@ export function ExcelSpreadsheet({
                     minWidth: `${rowHeaderWidth}px`,
                     height: `${getManualRowHeight(0) ?? DEFAULT_HEADER_ROW_HEIGHT}px`
                   }}
-                  className={`px-1 font-semibold text-center text-[11px] tabular-nums align-middle sticky left-0 z-40 select-none cursor-pointer touch-manipulation rounded-l-[8px] rounded-r-none shadow-[-4px_0_0_0_var(--grid-canvas)] ${
+                  className={`px-1 font-semibold text-center text-[11px] tabular-nums align-middle sticky left-0 z-40 select-none cursor-pointer touch-manipulation rounded-l-[8px] rounded-r-[3px] mk-glass-row-sticky ${
                     isRowHeaderHighlighted(0) && isFullRowSelectionMode
-                      ? 'bg-[var(--header-tile-active)] text-[var(--header-text-active)]'
+                      ? 'mk-glass-header-tile-active'
                       : isRowHeaderHighlighted(0)
-                        ? 'bg-[var(--header-tile-range)] text-[var(--col-title-text)]'
-                        : 'bg-[var(--header-tile-bg)] hover:bg-[var(--header-tile-hover)] text-[var(--header-text)]'
+                        ? 'mk-glass-header-tile-range'
+                        : 'mk-glass-header-tile'
                   }`}
                 >
                   <span>1</span>
@@ -4808,7 +5286,7 @@ export function ExcelSpreadsheet({
                   />
                 </th>
 
-                {Array.from({ length: totalCols }).map((_, cIdx) => {
+                {colIndices.map((cIdx) => {
                   const isAnchor = selectedCell.row === 0 && selectedCell.col === cIdx;
                   const isInSel = isCellInSelection(0, cIdx);
                   const isCellEditing = isAnchor && isEditing && selection.mode === 'cell';
@@ -4836,9 +5314,9 @@ export function ExcelSpreadsheet({
                       }}
                       onClick={(e) => handleCellClick(0, cIdx, e.shiftKey, e.detail)}
                       onDoubleClick={(e) => handleCellDoubleClick(0, cIdx, e.detail)}
-                      className={`px-2 sm:px-3 py-2 font-semibold text-xs leading-[20px] tracking-[0.01em] align-middle relative rounded-t-[2px] rounded-b-[5px] touch-manipulation ${alignClass} ${headerBgClass} ${
+                      className={`px-2 sm:px-3 py-2 font-semibold text-xs leading-[20px] tracking-[0.01em] align-middle relative rounded-t-[3px] rounded-b-[6px] touch-manipulation ${alignClass} ${headerBgClass} ${
                         isAnchor && !isCellEditing
-                          ? 'ring-2 ring-inset ring-[var(--selection-ring)] z-[25]'
+                          ? 'mk-glass-cell-anchor z-[25]'
                           : 'z-20'
                       }`}
                     >
@@ -4853,9 +5331,9 @@ export function ExcelSpreadsheet({
                           ref={setEditInputRef}
                           type="text"
                           value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
+                          onChange={(e) => handleEditValueChange(e.target.value)}
                           onBlur={() => commitEdit(0, 0)}
-                          className={`absolute inset-0 w-full h-full px-2 sm:px-3 text-base sm:text-xs font-semibold rounded-[5px] bg-[var(--formula-input-bg)] text-[var(--control-text)] border-2 border-[var(--selection-ring)] outline-none z-20 ${alignClass}`}
+                          className={`absolute inset-0 w-full h-full px-2 sm:px-3 text-base sm:text-xs font-semibold rounded-[6px] bg-[var(--formula-input-bg)] text-[var(--control-text)] border-2 border-[var(--selection-ring)] shadow-[0_0_0_2px_rgba(37,99,235,0.2)] dark:shadow-[0_0_0_2px_rgba(56,189,248,0.22)] outline-none z-20 ${alignClass}`}
                         />
                       ) : (
                         <div
@@ -4879,9 +5357,95 @@ export function ExcelSpreadsheet({
               </tr>
             </thead>
 
-            <tbody ref={tbodyRef}>
-              {Array.from({ length: displayRowsCount - 1 }).map((_, offsetIdx) => {
-                const rIdx = offsetIdx + 1;
+            <tbody
+              ref={tbodyRef}
+              onClick={(e) => {
+                const target = e.target as HTMLElement | null;
+                if (!target || target.closest('[data-row-resize]')) return;
+                const td = target.closest('td[data-r][data-c]') as HTMLElement | null;
+                if (td) {
+                  const r = Number(td.dataset.r);
+                  const c = Number(td.dataset.c);
+                  if (!Number.isNaN(r) && !Number.isNaN(c)) {
+                    handleCellClick(r, c, e.shiftKey, e.detail);
+                  }
+                  return;
+                }
+                const th = target.closest('th[data-rh]') as HTMLElement | null;
+                if (th) {
+                  const r = Number(th.dataset.rh);
+                  if (!Number.isNaN(r)) {
+                    handleRowHeaderClick(r, e.shiftKey);
+                  }
+                }
+              }}
+              onDoubleClick={(e) => {
+                const target = e.target as HTMLElement | null;
+                if (!target || target.closest('[data-row-resize]')) return;
+                const td = target.closest('td[data-r][data-c]') as HTMLElement | null;
+                if (td) {
+                  const r = Number(td.dataset.r);
+                  const c = Number(td.dataset.c);
+                  if (!Number.isNaN(r) && !Number.isNaN(c)) {
+                    handleCellDoubleClick(r, c, e.detail);
+                  }
+                }
+              }}
+              onContextMenu={(e) => {
+                const target = e.target as HTMLElement | null;
+                if (!target) return;
+                const td = target.closest('td[data-r][data-c]') as HTMLElement | null;
+                if (td) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const r = Number(td.dataset.r);
+                  const c = Number(td.dataset.c);
+                  if (!Number.isNaN(r) && !Number.isNaN(c)) {
+                    openCellContextMenu(r, c, e.clientX, e.clientY);
+                  }
+                  return;
+                }
+                const th = target.closest('th[data-rh]') as HTMLElement | null;
+                if (th) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const r = Number(th.dataset.rh);
+                  if (!Number.isNaN(r)) {
+                    openRowContextMenu(r, e.clientX, e.clientY);
+                  }
+                }
+              }}
+              onPointerDown={(e) => {
+                const target = e.target as HTMLElement | null;
+                if (!target) return;
+                const resizeHandle = target.closest('[data-row-resize]') as HTMLElement | null;
+                if (resizeHandle) {
+                  const r = Number(resizeHandle.dataset.rowResize);
+                  if (!Number.isNaN(r)) {
+                    handleRowResizeStart(r, e);
+                  }
+                  return;
+                }
+                if (e.pointerType === 'mouse') return;
+                const td = target.closest('td[data-r][data-c]') as HTMLElement | null;
+                if (td) {
+                  const r = Number(td.dataset.r);
+                  const c = Number(td.dataset.c);
+                  if (!Number.isNaN(r) && !Number.isNaN(c)) {
+                    startGridLongPress(e, (x, y) => openCellContextMenu(r, c, x, y));
+                  }
+                  return;
+                }
+                const th = target.closest('th[data-rh]') as HTMLElement | null;
+                if (th) {
+                  const r = Number(th.dataset.rh);
+                  if (!Number.isNaN(r)) {
+                    startGridLongPress(e, (x, y) => openRowContextMenu(r, x, y));
+                  }
+                }
+              }}
+            >
+              {dataRowIndices.map((rIdx) => {
                 const manualHeight = getManualRowHeight(rIdx);
                 const isRowHighlighted =
                   rIdx >= selectionBounds.rMin && rIdx <= selectionBounds.rMax;
@@ -4892,9 +5456,11 @@ export function ExcelSpreadsheet({
                 return (
                   <SpreadsheetDataRow
                     key={rIdx}
+                    workspace={workspace}
+                    paidColIdx={receptionCols.paidColIdx}
                     gridRowIdx={rIdx}
                     rowCells={currentSheet.rows[rIdx - 1]}
-                    totalCols={totalCols}
+                    colIndices={colIndices}
                     rowHeaderWidth={rowHeaderWidth}
                     colMetaList={colMetaList}
                     manualHeight={manualHeight}
@@ -4907,18 +5473,11 @@ export function ExcelSpreadsheet({
                     selectedColStart={isRowHighlighted ? selectionBounds.cMin : -1}
                     selectedColEnd={isRowHighlighted ? selectionBounds.cMax : -1}
                     dirtyColsKey={dirtyColsByRow.get(rIdx - 1)}
-                    onRowHeaderClick={handleRowHeaderClick}
-                    onRowHeaderContextMenu={(r, x, y) => openRowContextMenu(r, x, y)}
-                    onRowHeaderTouchStart={(r, e) => startGridLongPress(e, (x, y) => openRowContextMenu(r, x, y))}
-                    onRowResizeStart={handleRowResizeStart}
-                    onCellClick={handleCellClick}
-                    onCellDoubleClick={handleCellDoubleClick}
-                    onCellContextMenu={(r, c, x, y) => openCellContextMenu(r, c, x, y)}
-                    onCellTouchStart={(r, c, e) => startGridLongPress(e, (x, y) => openCellContextMenu(r, c, x, y))}
-                    onEditValueChange={setEditValue}
+                    onEditValueChange={handleEditValueChange}
+                    onEditKeyDown={handleEditInputKeyDown}
                     onCommitEdit={handleCommitEditBlur}
+                    onSelectCellValue={handleSelectCellValue}
                     setEditInputRef={setEditInputRef}
-                    setRowElementRef={setRowElementRef}
                   />
                 );
               })}
@@ -4928,7 +5487,7 @@ export function ExcelSpreadsheet({
       </div>
 
       {/* 4. Worksheet Tabs along the bottom with '+' button and Sign Out at bottom-right */}
-      <div className="min-h-10 sm:h-10 pb-[env(safe-area-inset-bottom)] bg-[var(--tab-strip-bg)] border-t border-[var(--chrome-border)] flex items-center justify-between px-2 sm:px-3 gap-2 sm:gap-3 shrink-0">
+      <div className="min-h-10 sm:h-10 pb-[env(safe-area-inset-bottom)] mk-glass-tabstrip flex items-center justify-between px-2 sm:px-3 gap-2 sm:gap-3 shrink-0 relative z-20">
         <div
           data-tour="worksheet-tabs"
           className="mk-tab-strip-scroll flex items-center gap-1.5 overflow-x-auto min-w-0 flex-1 py-1"
@@ -4977,12 +5536,12 @@ export function ExcelSpreadsheet({
                     handleStartRename(name);
                   }
                 }}
-                className={`group relative min-h-[30px] sm:min-h-0 px-2.5 sm:px-3 py-1 text-xs font-medium rounded-md border cursor-pointer select-none whitespace-nowrap flex items-center gap-1 touch-pan-x shrink-0 ${
+                className={`group relative min-h-[30px] sm:min-h-[26px] px-3 py-0.5 text-xs cursor-pointer select-none whitespace-nowrap flex items-center gap-1 touch-pan-x shrink-0 ${
                   isBeingDragged
-                    ? 'bg-blue-50 border-blue-600 text-blue-900 dark:bg-sky-900/70 dark:border-sky-400 dark:text-sky-100 shadow-md ring-2 ring-blue-500/40 dark:ring-sky-400/50 scale-[1.02] z-20'
+                    ? 'rounded-[10px] bg-blue-50/90 border border-blue-500 text-blue-900 dark:bg-sky-900/80 dark:border-sky-400 dark:text-sky-100 shadow-md ring-2 ring-blue-500/40 dark:ring-sky-400/50 scale-[1.02] z-20 font-semibold'
                     : isActive
-                      ? 'bg-[var(--tab-active-bg)] border-[var(--control-border)] border-b-2 border-b-[var(--tab-active-border)] text-[var(--tab-text-active)] font-semibold'
-                      : 'bg-[var(--tab-bg)] border-transparent text-[var(--tab-text)] hover:bg-[var(--tab-hover)] hover:text-[var(--tab-text-active)]'
+                      ? 'mk-glass-tab-active font-semibold'
+                      : 'mk-glass-tab font-medium'
                 } ${isDeletingThis ? 'opacity-50' : ''}`}
                 title={`Worksheet: ${name} (Double-click to rename, right-click or hold for options, drag to reorder)`}
               >
@@ -5022,7 +5581,7 @@ export function ExcelSpreadsheet({
                     onClick={(e) => e.stopPropagation()}
                     maxLength={31}
                     aria-label="Rename worksheet"
-                    className="px-1.5 py-0.5 text-sm sm:text-xs font-semibold bg-[var(--formula-input-bg)] border border-[var(--selection-ring)] rounded-xs text-[var(--control-text)] outline-none w-28 sm:w-32 select-text"
+                    className="px-2 py-0.5 text-sm sm:text-xs font-semibold bg-[var(--formula-input-bg)] border border-[var(--selection-ring)] rounded-full text-[var(--control-text)] outline-none w-28 sm:w-32 select-text"
                   />
                 ) : (
                   <>
@@ -5038,7 +5597,7 @@ export function ExcelSpreadsheet({
                         }}
                         aria-label={`Worksheet options for ${name}`}
                         title="Worksheet options (Rename, Delete, Reorder)"
-                        className="md:hidden -mr-1 ml-0.5 p-1 text-[var(--control-muted)] hover:text-[var(--control-text)] rounded cursor-pointer touch-manipulation"
+                        className="md:hidden -mr-1 ml-0.5 p-1 text-[var(--control-muted)] hover:text-[var(--control-text)] rounded-full cursor-pointer touch-manipulation"
                       >
                         <MoreVertical className="w-3.5 h-3.5" />
                       </button>
@@ -5055,14 +5614,14 @@ export function ExcelSpreadsheet({
             disabled={isCreatingSheet || isDeletingSheet}
             title="Create new worksheet"
             aria-label="Create new worksheet"
-            className="h-8 w-8 sm:h-7 sm:w-7 flex items-center justify-center rounded-md bg-[var(--control-bg)] hover:bg-[var(--control-bg-hover)] border border-[var(--control-border)] text-[var(--control-text)] font-bold text-sm cursor-pointer ml-0.5 shrink-0 disabled:opacity-50 touch-manipulation"
+            className="mk-glass-btn-secondary h-8 w-8 sm:h-7 sm:w-7 flex items-center justify-center font-bold text-sm cursor-pointer ml-0.5 shrink-0 disabled:opacity-50 touch-manipulation"
           >
             {isCreatingSheet ? '...' : '+'}
           </button>
         </div>
 
         {/* Bottom-Right Corner: Sign Out */}
-        <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 pl-2 sm:pl-3 border-l border-[var(--chrome-border)]">
+        <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 pl-2 sm:pl-3 border-l border-[var(--chrome-divider)]">
           <span
             className="hidden sm:inline text-[var(--control-muted)] font-mono text-[11px] max-w-[120px] md:max-w-[180px] truncate"
             title={user?.role}
@@ -5073,7 +5632,7 @@ export function ExcelSpreadsheet({
             type="button"
             onClick={() => void handleSignOutClick()}
             disabled={isLoggingOut}
-            className="min-h-[34px] sm:min-h-0 text-[11px] sm:text-xs text-[var(--control-text)] hover:text-red-600 dark:hover:text-red-400 font-semibold px-2 sm:px-2.5 py-1 rounded-md hover:bg-[var(--control-bg-hover)] cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1 sm:gap-1.5 whitespace-nowrap touch-manipulation"
+            className="mk-glass-btn-secondary min-h-[34px] sm:min-h-[28px] text-[11px] sm:text-xs hover:text-red-600 dark:hover:text-red-400 font-semibold px-3 py-1 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1 sm:gap-1.5 whitespace-nowrap touch-manipulation"
             title="Sign Out"
           >
             {isLoggingOut ? (
@@ -5093,36 +5652,45 @@ export function ExcelSpreadsheet({
 
 
 
-      {/* 6. Safeguard Confirmation Modal for Bulk / Row / Column Clear */}
-      <ConfirmDialog
-        isOpen={pendingBulkClear !== null}
-        title="Clear Selected Cells"
-        message={
-          pendingBulkClear
-            ? `You are about to clear ${pendingBulkClear.populatedCount} populated cell${
-                pendingBulkClear.populatedCount === 1 ? '' : 's'
-              }${
-                pendingBulkClear.includesHeader ? ' (including worksheet column header titles)' : ''
-              }. Changes will not be saved until you click Save or press Ctrl+S.`
-            : ''
-        }
-        confirmLabel="Clear Cells"
-        confirmVariant="danger"
-        onConfirm={() => {
-          if (pendingBulkClear) {
-            applyCellUpdates(pendingBulkClear.updates, {
-              selectionBefore: selection,
-              selectionAfter: selection
-            });
-            setPendingBulkClear(null);
-            rootRef.current?.focus({ preventScroll: true });
-          }
-        }}
-        onCancel={() => {
-          setPendingBulkClear(null);
-          rootRef.current?.focus({ preventScroll: true });
-        }}
-      />
+      {/* 5a. Smart In-Memory Cell Autocomplete Popover */}
+      {isEditing && autocompleteSuggestions.length > 0 && autocompleteAnchorRect && (
+        <div
+          role="listbox"
+          aria-label="Column autocomplete suggestions"
+          style={getAutocompletePopoverStyle(autocompleteAnchorRect, autocompleteSuggestions.length)}
+          className="z-[70] mk-glass-panel rounded-2xl p-1.5 max-h-[256px] overflow-y-auto"
+        >
+          <div className="flex items-center justify-between px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--control-muted)] select-none">
+            <span>Suggestions</span>
+            <span className="hidden sm:inline font-normal normal-case tracking-normal opacity-80">
+              ↑↓ · Enter · Esc
+            </span>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {autocompleteSuggestions.map((suggestion, idx) => {
+              const isActiveItem = idx === activeAutocompleteIdx;
+              return (
+                <button
+                  key={suggestion}
+                  type="button"
+                  role="option"
+                  aria-selected={isActiveItem}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => handleAcceptAutocompleteSuggestion(suggestion)}
+                  className={`w-full text-left px-2.5 py-1.5 rounded-xl text-xs truncate cursor-pointer touch-manipulation transition-colors duration-75 ${
+                    isActiveItem
+                      ? 'bg-blue-600/90 text-white dark:bg-sky-500/85 dark:text-slate-950 font-semibold shadow-sm'
+                      : 'text-[var(--control-text)] hover:bg-white/75 dark:hover:bg-white/10 font-medium'
+                  }`}
+                >
+                  {suggestion}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* 5b. Unified Spreadsheet Context Menu */}
       <SpreadsheetContextMenu

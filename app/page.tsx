@@ -279,27 +279,27 @@ export default function Home() {
 
   if (isCheckingAuth) {
     return (
-      <div className="flex flex-col mk-h-dvh w-full bg-[var(--grid-canvas)] overflow-hidden">
-        <div className="h-12 px-3 sm:px-4 bg-[var(--chrome-bg)] border-b border-[var(--chrome-border)] flex items-center justify-between shrink-0">
-          <div className="h-6 w-28 sm:w-32 rounded bg-[var(--control-bg)] animate-pulse" />
+      <div className="flex flex-col mk-h-dvh w-full mk-glass-viewport overflow-hidden">
+        <div className="h-12 px-3 sm:px-4 mk-glass-chrome flex items-center justify-between shrink-0">
+          <div className="h-6 w-28 sm:w-32 rounded-full bg-white/50 dark:bg-white/10 animate-pulse" />
           <div className="flex items-center gap-2">
-            <div className="h-7 w-14 sm:w-16 rounded-lg bg-[var(--control-bg)] animate-pulse" />
-            <div className="h-7 w-14 sm:w-16 rounded-lg bg-[var(--control-bg)] animate-pulse" />
+            <div className="h-7 w-14 sm:w-16 rounded-full bg-white/50 dark:bg-white/10 animate-pulse" />
+            <div className="h-7 w-14 sm:w-16 rounded-full bg-white/50 dark:bg-white/10 animate-pulse" />
           </div>
         </div>
-        <div className="h-10 px-2.5 sm:px-3 bg-[var(--formula-bg)] border-b border-[var(--chrome-border)] flex items-center gap-2 shrink-0">
-          <div className="h-7 w-[56px] sm:w-[72px] rounded-md bg-[var(--formula-address-bg)] animate-pulse" />
-          <div className="h-7 flex-1 rounded-md bg-[var(--formula-input-bg)] border border-[var(--control-border)] animate-pulse" />
+        <div className="h-10 px-2.5 sm:px-3 mk-glass-formula-bar flex items-center gap-2 shrink-0">
+          <div className="h-7 w-[56px] sm:w-[72px] rounded-full mk-glass-pill-badge animate-pulse" />
+          <div className="h-7 flex-1 rounded-full mk-glass-pill-input animate-pulse" />
         </div>
         <div className="flex-1 flex items-center justify-center p-6">
-          <div className="flex items-center gap-2.5 text-xs font-medium text-[var(--control-muted)]">
+          <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-full mk-glass-panel text-xs font-medium text-[var(--control-muted)]">
             <span className="w-4 h-4 border-2 border-[var(--control-border)] border-t-[var(--selection-ring)] rounded-full animate-spin" />
             <span>Loading MK Eye Center workspace...</span>
           </div>
         </div>
-        <div className="h-10 px-3 bg-[var(--tab-strip-bg)] border-t border-[var(--chrome-border)] flex items-center gap-2 shrink-0">
-          <div className="h-6 w-24 rounded-md bg-[var(--tab-bg)] animate-pulse" />
-          <div className="h-6 w-20 rounded-md bg-[var(--tab-bg)] animate-pulse" />
+        <div className="h-10 px-3 mk-glass-tabstrip flex items-center gap-2 shrink-0">
+          <div className="h-6 w-24 rounded-[10px] mk-glass-tab animate-pulse" />
+          <div className="h-6 w-20 rounded-[10px] mk-glass-tab animate-pulse" />
         </div>
       </div>
     );
@@ -307,26 +307,26 @@ export default function Home() {
 
   if (!user) {
     return (
-      <main className="relative mk-min-h-dvh w-full flex flex-col overflow-x-hidden overflow-y-auto bg-slate-200 pb-[max(1.25rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))]">
-        {/* Full-bleed edge-to-edge clinic background across all devices and orientations */}
+      <main className="relative mk-min-h-dvh w-full flex flex-col overflow-x-hidden overflow-y-auto bg-slate-300 pb-[max(1.25rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))]">
+        {/* Full-bleed edge-to-edge clinic background naturally dimmed ~32% for sharp foreground legibility */}
         <div className="fixed inset-0 z-0 pointer-events-none select-none overflow-hidden">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/assets/aistudio/login_bg_de335fe2.jpg"
+            src="/assets/aistudio/login_cf1520db.jpg"
             alt=""
             aria-hidden="true"
-            className="w-full h-full object-cover object-[35%_center] sm:object-[40%_center] md:object-center"
+            className="w-full h-full object-cover object-[28%_center] sm:object-[38%_center] md:object-center brightness-[0.68] contrast-[0.98]"
           />
-          <div className="absolute inset-0 bg-slate-950/10" />
+          <div className="absolute inset-0 bg-slate-900/10" aria-hidden="true" />
         </div>
 
-        {/* Top-Left Brand Logo directly over the background (no pill/box container) */}
-        <header className="relative z-20 w-full flex items-center justify-start px-2 sm:px-5 md:px-7 pt-[max(1rem,env(safe-area-inset-top))] sm:pt-6 shrink-0">
+        {/* Top-Left Brand Logo visible on tablet and desktop viewports only (hidden on mobile <640px) */}
+        <header className="relative z-20 w-full hidden sm:flex items-center justify-start px-5 md:px-7 pt-6 shrink-0">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/assets/aistudio/mk_long_logo_a5863dd4.png"
             alt="MK Eye Center"
-            className="h-8 sm:h-10 md:h-11 w-auto max-w-[168px] sm:max-w-[215px] object-contain select-none drop-shadow-[0_1px_4px_rgba(255,255,255,0.75)]"
+            className="h-10 md:h-11 w-auto max-w-[215px] object-contain select-none brightness-[1.08] contrast-[1.12] drop-shadow-[0_0_10px_rgba(255,255,255,0.9)]"
             referrerPolicy="no-referrer"
           />
         </header>
