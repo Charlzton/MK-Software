@@ -24,23 +24,17 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'MK Excel',
+  title: 'MK Eye Center - Patient Register Portal',
   description: 'Secure cloud-based patient register and clinic administration portal for MK Eye Center, supporting Reception, Doctor workspaces, and Google Sheets synchronization.',
-  icons: {
-    icon: '/assets/aistudio/MK_LOGO-_267c4dd0.png',
-    apple: '/assets/aistudio/MK_LOGO-_267c4dd0.png',
-  },
   openGraph: {
-    title: 'MK Excel',
+    title: 'MK Eye Center - Patient Register Portal',
     description: 'Secure cloud-based patient register and clinic administration portal for MK Eye Center.',
     type: 'website',
-    images: ['/assets/aistudio/MK_LOGO-_267c4dd0.png'],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'MK Excel',
+    title: 'MK Eye Center - Patient Register Portal',
     description: 'Secure cloud-based patient register and clinic administration portal for MK Eye Center.',
-    images: ['/assets/aistudio/MK_LOGO-_267c4dd0.png'],
   },
 };
 

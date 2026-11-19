@@ -77,7 +77,7 @@ function ColumnWidthModalContent({
 
   return (
     <div
-      className="fixed inset-0 z-[95] flex items-center justify-center p-3 sm:p-4 bg-slate-900/35 dark:bg-black/65 backdrop-blur-xs"
+      className="fixed inset-0 z-[95] flex items-center justify-center p-3 sm:p-4 bg-slate-900/45 dark:bg-black/70 backdrop-blur-xs"
       role="dialog"
       aria-modal="true"
       aria-label={`Resize column ${columnLabel}`}
@@ -88,14 +88,10 @@ function ColumnWidthModalContent({
       }}
     >
       <div
-        className="relative w-full max-w-[calc(100vw-1.5rem)] sm:max-w-sm mk-glass-panel text-[var(--control-text)] rounded-[24px] overflow-hidden font-sans"
+        className="w-full max-w-[calc(100vw-1.5rem)] sm:max-w-sm bg-[var(--chrome-bg)] text-[var(--control-text)] border border-[var(--control-border)] rounded-xl shadow-2xl overflow-hidden font-sans"
         onClick={(e) => e.stopPropagation()}
       >
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-6 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/95 dark:via-white/35 to-transparent"
-        />
-        <div className="px-5 py-3.5 border-b border-[var(--chrome-divider)] flex items-center justify-between gap-2">
+        <div className="px-4 py-3 border-b border-[var(--chrome-border)] flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <SlidersHorizontal className="w-4 h-4 text-[var(--selection-ring)] shrink-0" />
             <h3 className="text-sm font-semibold truncate">Resize Column {columnLabel}</h3>
@@ -104,15 +100,15 @@ function ColumnWidthModalContent({
             type="button"
             onClick={onClose}
             aria-label="Close resize modal"
-            className="p-1.5 text-[var(--control-muted)] hover:text-[var(--control-text)] hover:bg-slate-900/5 dark:hover:bg-white/10 rounded-full cursor-pointer transition-colors"
+            className="p-1 text-[var(--control-muted)] hover:text-[var(--control-text)] rounded cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        <form onSubmit={handleSubmit} className="p-4 space-y-3">
           <div>
-            <label htmlFor="mk-col-width-input" className="block pl-3 text-[11.5px] font-semibold text-[var(--control-muted)] mb-1.5">
+            <label htmlFor="mk-col-width-input" className="block text-xs font-medium text-[var(--control-muted)] mb-1.5">
               Column width in pixels ({minWidth}–{maxWidth} px)
             </label>
             <input
@@ -126,16 +122,16 @@ function ColumnWidthModalContent({
                 setWidthInput(e.target.value);
                 setError(null);
               }}
-              className="mk-glass-pill-input w-full min-h-[40px] sm:min-h-[38px] px-4 py-1.5 text-sm sm:text-xs font-mono tabular-nums"
+              className="w-full min-h-[40px] sm:min-h-[36px] px-3 py-1.5 text-sm sm:text-xs font-mono tabular-nums bg-[var(--formula-input-bg)] border border-[var(--control-border)] rounded-lg text-[var(--control-text)] outline-none focus:border-[var(--selection-ring)] focus:ring-1 focus:ring-[var(--selection-ring)]"
             />
-            {error && <p className="mt-1.5 pl-3 text-xs text-red-600 dark:text-red-400">{error}</p>}
+            {error && <p className="mt-1.5 text-xs text-red-600 dark:text-red-400">{error}</p>}
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-[var(--chrome-divider)]">
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--chrome-border)]">
             <button
               type="button"
               onClick={onResetDefault}
-              className="min-h-[38px] sm:min-h-[34px] px-3 py-1.5 text-xs font-medium text-[var(--control-muted)] hover:text-[var(--control-text)] hover:bg-white/45 dark:hover:bg-white/10 rounded-full cursor-pointer touch-manipulation transition-colors"
+              className="min-h-[38px] sm:min-h-0 px-3 py-1.5 text-xs font-medium text-[var(--control-muted)] hover:text-[var(--control-text)] hover:bg-[var(--control-bg-hover)] rounded-lg cursor-pointer touch-manipulation"
             >
               Default ({defaultWidth}px)
             </button>
@@ -143,13 +139,13 @@ function ColumnWidthModalContent({
               <button
                 type="button"
                 onClick={onClose}
-                className="mk-glass-btn-secondary min-h-[38px] sm:min-h-[34px] px-3.5 py-1.5 text-xs font-semibold cursor-pointer touch-manipulation"
+                className="min-h-[38px] sm:min-h-0 px-3 py-1.5 text-xs font-medium bg-[var(--control-bg)] hover:bg-[var(--control-bg-hover)] border border-[var(--control-border)] rounded-lg cursor-pointer touch-manipulation"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="mk-glass-btn-primary min-h-[38px] sm:min-h-[34px] px-4 py-1.5 text-xs font-semibold cursor-pointer touch-manipulation"
+                className="min-h-[38px] sm:min-h-0 px-3.5 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white rounded-lg cursor-pointer touch-manipulation"
               >
                 Apply
               </button>

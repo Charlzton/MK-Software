@@ -7,16 +7,17 @@
 -- What this provides:
 --   1. Idempotently guarantees public.workbook_sheets.column_widths and
 --      row_heights exist with NOT NULL DEFAULT '{}'::jsonb and repairs any NULLs.
---   2. Recreates public.save_workspace_sheet_layout cleanly (dropping any stale
---      overloads) with resilient jsonb numeric coercion for column widths &
---      row heights.
---   3. Adds transactional, role-verified structural RPCs:
+--   2. Recreates public.save_workspace_sheet_layout cleanly (dropping only the
+--      exact signature) with hardened jsonb key & numeric coercion.
+--   3. Adds transactional, role-verified structural RPCs using canonical lock
+--      ordering (workbook_sheets FOR UPDATE -> workbook_rows ORDER BY row_index, id FOR UPDATE):
 --      - public.insert_workspace_row(p_workspace, p_sheet_id, p_row_index)
 --      - public.delete_workspace_row(p_workspace, p_sheet_id, p_start_row_index, p_end_row_index)
 --      - public.insert_workspace_column(p_workspace, p_sheet_id, p_col_index)
 --      - public.delete_workspace_column(p_workspace, p_sheet_id, p_col_index)
 --      Each RPC preserves parent import_batch_id, row/cell/header versions,
---      and shifts per-sheet column_widths / row_heights cleanly.
+--      and shifts per-sheet column_widths / row_heights cleanly without silent
+--      data truncation or unique-index collisions.
 --   4. Reloads PostgREST schema cache.
 -- ============================================================================
 
@@ -32,27 +33,11 @@ SET
   row_heights = COALESCE(row_heights, '{}'::jsonb)
 WHERE column_widths IS NULL OR row_heights IS NULL;
 
-DO $$
-DECLARE
-  v_sig text;
-BEGIN
-  FOR v_sig IN
-    SELECT p.oid::regprocedure::text
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'public'
-      AND p.proname IN (
-        'save_workspace_sheet_layout',
-        'insert_workspace_row',
-        'delete_workspace_row',
-        'insert_workspace_column',
-        'delete_workspace_column'
-      )
-  LOOP
-    EXECUTE 'DROP FUNCTION IF EXISTS ' || v_sig || ';';
-  END LOOP;
-END;
-$$;
+DROP FUNCTION IF EXISTS public.save_workspace_sheet_layout(text, uuid, jsonb, jsonb);
+DROP FUNCTION IF EXISTS public.insert_workspace_row(text, uuid, integer);
+DROP FUNCTION IF EXISTS public.delete_workspace_row(text, uuid, integer, integer);
+DROP FUNCTION IF EXISTS public.insert_workspace_column(text, uuid, integer);
+DROP FUNCTION IF EXISTS public.delete_workspace_column(text, uuid, integer);
 
 -- 1. Hardened Layout Persistence RPC (Column Widths & Row Heights)
 CREATE OR REPLACE FUNCTION public.save_workspace_sheet_layout(
@@ -109,13 +94,13 @@ BEGIN
 
   IF p_column_widths IS NOT NULL AND jsonb_typeof(p_column_widths) = 'object' THEN
     FOR v_entry IN SELECT key, value FROM jsonb_each(p_column_widths) LOOP
-      IF v_entry.key ~ '^[0-9]+$' THEN
+      IF v_entry.key ~ '^[0-9]{1,6}$' AND jsonb_typeof(v_entry.value) IN ('number', 'string') THEN
         v_raw_text := btrim(v_entry.value #>> '{}');
-        IF jsonb_typeof(v_entry.value) IN ('number', 'string') AND v_raw_text ~ '^[0-9]+(\.[0-9]+)?$' THEN
+        IF length(v_raw_text) <= 32 AND v_raw_text ~ '^[0-9]{1,6}(\.[0-9]+)?$' THEN
           v_idx := v_entry.key::integer;
           v_num := round(v_raw_text::numeric);
           IF v_idx >= 0 AND v_idx < 256 AND v_num >= 40 AND v_num <= 800 THEN
-            v_clean_cols := v_clean_cols || jsonb_build_object(v_entry.key, v_num);
+            v_clean_cols := v_clean_cols || jsonb_build_object(v_idx::text, v_num);
           END IF;
         END IF;
       END IF;
@@ -124,13 +109,13 @@ BEGIN
 
   IF p_row_heights IS NOT NULL AND jsonb_typeof(p_row_heights) = 'object' THEN
     FOR v_entry IN SELECT key, value FROM jsonb_each(p_row_heights) LOOP
-      IF v_entry.key ~ '^[0-9]+$' THEN
+      IF v_entry.key ~ '^[0-9]{1,6}$' AND jsonb_typeof(v_entry.value) IN ('number', 'string') THEN
         v_raw_text := btrim(v_entry.value #>> '{}');
-        IF jsonb_typeof(v_entry.value) IN ('number', 'string') AND v_raw_text ~ '^[0-9]+(\.[0-9]+)?$' THEN
+        IF length(v_raw_text) <= 32 AND v_raw_text ~ '^[0-9]{1,6}(\.[0-9]+)?$' THEN
           v_idx := v_entry.key::integer;
           v_num := round(v_raw_text::numeric);
           IF v_idx >= 0 AND v_idx < 100000 AND v_num >= 24 AND v_num <= 600 THEN
-            v_clean_rows := v_clean_rows || jsonb_build_object(v_entry.key, v_num);
+            v_clean_rows := v_clean_rows || jsonb_build_object(v_idx::text, v_num);
           END IF;
         END IF;
       END IF;
@@ -172,7 +157,9 @@ DECLARE
   v_user_id uuid;
   v_staff record;
   v_sheet record;
+  v_min_row_idx integer;
   v_max_row_idx integer;
+  v_total_rows integer;
   v_new_heights jsonb := '{}'::jsonb;
   v_entry record;
   v_key_idx integer;
@@ -212,6 +199,7 @@ BEGIN
     RAISE EXCEPTION 'INVALID_ROW_INDEX: p_row_index must be between 0 and 99998.';
   END IF;
 
+  -- Canonical lock order: parent sheet first, then all rows in deterministic order
   SELECT ws.id, ws.row_heights
   INTO v_sheet
   FROM public.workbook_sheets ws
@@ -223,10 +211,23 @@ BEGIN
     RAISE EXCEPTION 'SHEET_NOT_FOUND: Worksheet not found in % workspace.', p_workspace;
   END IF;
 
-  SELECT COALESCE(MAX(wr.row_index), -1)
-  INTO v_max_row_idx
+  PERFORM wr.id
+  FROM public.workbook_rows wr
+  WHERE wr.sheet_id = p_sheet_id
+  ORDER BY wr.row_index, wr.id
+  FOR UPDATE;
+
+  SELECT
+    COALESCE(MIN(wr.row_index), -1),
+    COALESCE(MAX(wr.row_index), -1),
+    COUNT(*)::integer
+  INTO v_min_row_idx, v_max_row_idx, v_total_rows
   FROM public.workbook_rows wr
   WHERE wr.sheet_id = p_sheet_id;
+
+  IF v_total_rows > 0 AND v_min_row_idx < 0 THEN
+    RAISE EXCEPTION 'INVALID_ROW_INDEX: Existing worksheet contains negative row_index (%).', v_min_row_idx;
+  END IF;
 
   IF v_max_row_idx >= 99999 THEN
     RAISE EXCEPTION 'INVALID_ROW_INDEX: Maximum row limit (100000) reached.';
@@ -243,18 +244,18 @@ BEGIN
   WHERE wr.sheet_id = p_sheet_id
     AND wr.row_index >= p_row_index + 1000000;
 
-  -- Shift manual row_heights (gridRowIdx = dataRowIdx + 1)
+  -- Shift manual row_heights (gridRowIdx = dataRowIdx + 1; gridRowIdx 0 header stays unchanged)
   v_grid_target := p_row_index + 1;
   IF v_sheet.row_heights IS NOT NULL AND jsonb_typeof(v_sheet.row_heights) = 'object' THEN
     FOR v_entry IN SELECT key, value FROM jsonb_each(v_sheet.row_heights) LOOP
-      IF v_entry.key ~ '^[0-9]+$' THEN
+      IF v_entry.key ~ '^[0-9]{1,6}$' THEN
         v_key_idx := v_entry.key::integer;
         IF v_key_idx >= v_grid_target THEN
           IF v_key_idx + 1 < 100000 THEN
             v_new_heights := v_new_heights || jsonb_build_object((v_key_idx + 1)::text, v_entry.value);
           END IF;
-        ELSE
-          v_new_heights := v_new_heights || jsonb_build_object(v_entry.key, v_entry.value);
+        ELSIF v_key_idx >= 0 AND v_key_idx < 100000 THEN
+          v_new_heights := v_new_heights || jsonb_build_object(v_key_idx::text, v_entry.value);
         END IF;
       END IF;
     END LOOP;
@@ -289,6 +290,9 @@ DECLARE
   v_user_id uuid;
   v_staff record;
   v_sheet record;
+  v_min_row_idx integer;
+  v_max_row_idx integer;
+  v_total_rows integer;
   v_end_idx integer;
   v_delete_count integer;
   v_new_heights jsonb := '{}'::jsonb;
@@ -334,6 +338,7 @@ BEGIN
 
   v_delete_count := v_end_idx - p_start_row_index + 1;
 
+  -- Canonical lock order: parent sheet first, then all rows in deterministic order
   SELECT ws.id, ws.row_heights
   INTO v_sheet
   FROM public.workbook_sheets ws
@@ -343,6 +348,25 @@ BEGIN
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'SHEET_NOT_FOUND: Worksheet not found in % workspace.', p_workspace;
+  END IF;
+
+  PERFORM wr.id
+  FROM public.workbook_rows wr
+  WHERE wr.sheet_id = p_sheet_id
+  ORDER BY wr.row_index, wr.id
+  FOR UPDATE;
+
+  SELECT
+    COALESCE(MIN(wr.row_index), -1),
+    COALESCE(MAX(wr.row_index), -1),
+    COUNT(*)::integer
+  INTO v_min_row_idx, v_max_row_idx, v_total_rows
+  FROM public.workbook_rows wr
+  WHERE wr.sheet_id = p_sheet_id;
+
+  IF v_total_rows > 0 AND (v_min_row_idx < 0 OR v_max_row_idx >= 100000) THEN
+    RAISE EXCEPTION 'INVALID_ROW_INDEX: Existing worksheet row indexes (%..%) are outside supported bounds (0..99999).',
+      v_min_row_idx, v_max_row_idx;
   END IF;
 
   DELETE FROM public.workbook_rows wr
@@ -365,11 +389,11 @@ BEGIN
   v_grid_end := v_end_idx + 1;
   IF v_sheet.row_heights IS NOT NULL AND jsonb_typeof(v_sheet.row_heights) = 'object' THEN
     FOR v_entry IN SELECT key, value FROM jsonb_each(v_sheet.row_heights) LOOP
-      IF v_entry.key ~ '^[0-9]+$' THEN
+      IF v_entry.key ~ '^[0-9]{1,6}$' THEN
         v_key_idx := v_entry.key::integer;
-        IF v_key_idx < v_grid_start THEN
-          v_new_heights := v_new_heights || jsonb_build_object(v_entry.key, v_entry.value);
-        ELSIF v_key_idx > v_grid_end THEN
+        IF v_key_idx >= 0 AND v_key_idx < v_grid_start THEN
+          v_new_heights := v_new_heights || jsonb_build_object(v_key_idx::text, v_entry.value);
+        ELSIF v_key_idx > v_grid_end AND v_key_idx < 100000 THEN
           v_new_heights := v_new_heights || jsonb_build_object((v_key_idx - v_delete_count)::text, v_entry.value);
         END IF;
       END IF;
@@ -409,6 +433,7 @@ DECLARE
   v_headers jsonb;
   v_new_headers jsonb := '[]'::jsonb;
   v_header_len integer;
+  v_max_cells_len integer;
   v_new_header_version bigint;
   v_new_widths jsonb := '{}'::jsonb;
   v_entry record;
@@ -453,6 +478,7 @@ BEGIN
     RAISE EXCEPTION 'INVALID_COL_INDEX: p_col_index must be between 0 and 254.';
   END IF;
 
+  -- Canonical lock order: parent sheet first, then all rows in deterministic order
   SELECT ws.id, ws.headers, ws.header_version, ws.column_widths
   INTO v_sheet
   FROM public.workbook_sheets ws
@@ -464,14 +490,27 @@ BEGIN
     RAISE EXCEPTION 'SHEET_NOT_FOUND: Worksheet not found in % workspace.', p_workspace;
   END IF;
 
+  PERFORM wr.id
+  FROM public.workbook_rows wr
+  WHERE wr.sheet_id = p_sheet_id
+  ORDER BY wr.row_index, wr.id
+  FOR UPDATE;
+
   v_headers := CASE
     WHEN v_sheet.headers IS NOT NULL AND jsonb_typeof(v_sheet.headers) = 'array' THEN v_sheet.headers
     ELSE '[]'::jsonb
   END;
   v_header_len := jsonb_array_length(v_headers);
 
-  IF v_header_len >= 256 THEN
-    RAISE EXCEPTION 'INVALID_COL_INDEX: Maximum column limit (256) reached.';
+  SELECT COALESCE(MAX(jsonb_array_length(wr.cells)), 0)
+  INTO v_max_cells_len
+  FROM public.workbook_rows wr
+  WHERE wr.sheet_id = p_sheet_id
+    AND wr.cells IS NOT NULL
+    AND jsonb_typeof(wr.cells) = 'array';
+
+  IF v_header_len >= 256 OR v_max_cells_len >= 256 THEN
+    RAISE EXCEPTION 'INVALID_COL_INDEX: Maximum column limit (256) reached; inserting a column would truncate column 255.';
   END IF;
 
   -- Build spliced headers array
@@ -489,14 +528,14 @@ BEGIN
   -- Shift column_widths
   IF v_sheet.column_widths IS NOT NULL AND jsonb_typeof(v_sheet.column_widths) = 'object' THEN
     FOR v_entry IN SELECT key, value FROM jsonb_each(v_sheet.column_widths) LOOP
-      IF v_entry.key ~ '^[0-9]+$' THEN
+      IF v_entry.key ~ '^[0-9]{1,6}$' THEN
         v_key_idx := v_entry.key::integer;
         IF v_key_idx >= p_col_index THEN
           IF v_key_idx + 1 < 256 THEN
             v_new_widths := v_new_widths || jsonb_build_object((v_key_idx + 1)::text, v_entry.value);
           END IF;
-        ELSE
-          v_new_widths := v_new_widths || jsonb_build_object(v_entry.key, v_entry.value);
+        ELSIF v_key_idx >= 0 AND v_key_idx < 256 THEN
+          v_new_widths := v_new_widths || jsonb_build_object(v_key_idx::text, v_entry.value);
         END IF;
       END IF;
     END LOOP;
@@ -510,12 +549,12 @@ BEGIN
       column_widths = v_new_widths
   WHERE ws.id = p_sheet_id;
 
-  -- Shift cells & cell_versions across existing rows
+  -- Shift cells & cell_versions across all locked rows in deterministic order
   FOR v_row IN
     SELECT wr.id, wr.cells, wr.row_version, wr.cell_versions
     FROM public.workbook_rows wr
     WHERE wr.sheet_id = p_sheet_id
-    FOR UPDATE
+    ORDER BY wr.row_index, wr.id
   LOOP
     v_cells := CASE
       WHEN v_row.cells IS NOT NULL AND jsonb_typeof(v_row.cells) = 'array' THEN v_row.cells
@@ -525,13 +564,11 @@ BEGIN
 
     IF v_cells_len > p_col_index THEN
       v_new_cells := '[]'::jsonb;
-      FOR i IN 0..(LEAST(v_cells_len, 255) - 1) LOOP
+      FOR i IN 0..(v_cells_len - 1) LOOP
         IF i = p_col_index THEN
           v_new_cells := v_new_cells || jsonb_build_array('');
         END IF;
-        IF jsonb_array_length(v_new_cells) < 256 THEN
-          v_new_cells := v_new_cells || jsonb_build_array(v_cells -> i);
-        END IF;
+        v_new_cells := v_new_cells || jsonb_build_array(v_cells -> i);
       END LOOP;
     ELSE
       v_new_cells := v_cells;
@@ -540,14 +577,14 @@ BEGIN
     v_new_cell_versions := '{}'::jsonb;
     IF v_row.cell_versions IS NOT NULL AND jsonb_typeof(v_row.cell_versions) = 'object' THEN
       FOR v_entry IN SELECT key, value FROM jsonb_each(v_row.cell_versions) LOOP
-        IF v_entry.key ~ '^[0-9]+$' THEN
+        IF v_entry.key ~ '^[0-9]{1,6}$' THEN
           v_key_idx := v_entry.key::integer;
           IF v_key_idx >= p_col_index THEN
             IF v_key_idx + 1 < 256 THEN
               v_new_cell_versions := v_new_cell_versions || jsonb_build_object((v_key_idx + 1)::text, v_entry.value);
             END IF;
-          ELSE
-            v_new_cell_versions := v_new_cell_versions || jsonb_build_object(v_entry.key, v_entry.value);
+          ELSIF v_key_idx >= 0 AND v_key_idx < 256 THEN
+            v_new_cell_versions := v_new_cell_versions || jsonb_build_object(v_key_idx::text, v_entry.value);
           END IF;
         END IF;
       END LOOP;
@@ -634,6 +671,7 @@ BEGIN
     RAISE EXCEPTION 'INVALID_COL_INDEX: p_col_index must be between 0 and 255.';
   END IF;
 
+  -- Canonical lock order: parent sheet first, then all rows in deterministic order
   SELECT ws.id, ws.headers, ws.header_version, ws.column_widths
   INTO v_sheet
   FROM public.workbook_sheets ws
@@ -644,6 +682,12 @@ BEGIN
   IF NOT FOUND THEN
     RAISE EXCEPTION 'SHEET_NOT_FOUND: Worksheet not found in % workspace.', p_workspace;
   END IF;
+
+  PERFORM wr.id
+  FROM public.workbook_rows wr
+  WHERE wr.sheet_id = p_sheet_id
+  ORDER BY wr.row_index, wr.id
+  FOR UPDATE;
 
   v_headers := CASE
     WHEN v_sheet.headers IS NOT NULL AND jsonb_typeof(v_sheet.headers) = 'array' THEN v_sheet.headers
@@ -664,11 +708,11 @@ BEGIN
   -- Shift column_widths
   IF v_sheet.column_widths IS NOT NULL AND jsonb_typeof(v_sheet.column_widths) = 'object' THEN
     FOR v_entry IN SELECT key, value FROM jsonb_each(v_sheet.column_widths) LOOP
-      IF v_entry.key ~ '^[0-9]+$' THEN
+      IF v_entry.key ~ '^[0-9]{1,6}$' THEN
         v_key_idx := v_entry.key::integer;
-        IF v_key_idx < p_col_index THEN
-          v_new_widths := v_new_widths || jsonb_build_object(v_entry.key, v_entry.value);
-        ELSIF v_key_idx > p_col_index THEN
+        IF v_key_idx >= 0 AND v_key_idx < p_col_index THEN
+          v_new_widths := v_new_widths || jsonb_build_object(v_key_idx::text, v_entry.value);
+        ELSIF v_key_idx > p_col_index AND v_key_idx < 256 THEN
           v_new_widths := v_new_widths || jsonb_build_object((v_key_idx - 1)::text, v_entry.value);
         END IF;
       END IF;
@@ -683,12 +727,12 @@ BEGIN
       column_widths = v_new_widths
   WHERE ws.id = p_sheet_id;
 
-  -- Shift cells & cell_versions across existing rows
+  -- Shift cells & cell_versions across all locked rows in deterministic order
   FOR v_row IN
     SELECT wr.id, wr.cells, wr.row_version, wr.cell_versions
     FROM public.workbook_rows wr
     WHERE wr.sheet_id = p_sheet_id
-    FOR UPDATE
+    ORDER BY wr.row_index, wr.id
   LOOP
     v_cells := CASE
       WHEN v_row.cells IS NOT NULL AND jsonb_typeof(v_row.cells) = 'array' THEN v_row.cells
@@ -710,11 +754,11 @@ BEGIN
     v_new_cell_versions := '{}'::jsonb;
     IF v_row.cell_versions IS NOT NULL AND jsonb_typeof(v_row.cell_versions) = 'object' THEN
       FOR v_entry IN SELECT key, value FROM jsonb_each(v_row.cell_versions) LOOP
-        IF v_entry.key ~ '^[0-9]+$' THEN
+        IF v_entry.key ~ '^[0-9]{1,6}$' THEN
           v_key_idx := v_entry.key::integer;
-          IF v_key_idx < p_col_index THEN
-            v_new_cell_versions := v_new_cell_versions || jsonb_build_object(v_entry.key, v_entry.value);
-          ELSIF v_key_idx > p_col_index THEN
+          IF v_key_idx >= 0 AND v_key_idx < p_col_index THEN
+            v_new_cell_versions := v_new_cell_versions || jsonb_build_object(v_key_idx::text, v_entry.value);
+          ELSIF v_key_idx > p_col_index AND v_key_idx < 256 THEN
             v_new_cell_versions := v_new_cell_versions || jsonb_build_object((v_key_idx - 1)::text, v_entry.value);
           END IF;
         END IF;

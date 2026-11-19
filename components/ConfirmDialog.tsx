@@ -27,19 +27,15 @@ export function ConfirmDialog({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/35 dark:bg-black/65 backdrop-blur-xs">
-      <div className="relative w-full max-w-[calc(100vw-1.5rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] flex flex-col mk-glass-panel text-[var(--control-text)] rounded-[24px] overflow-hidden">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-6 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/95 dark:via-white/35 to-transparent"
-        />
-        <div className="p-5 sm:p-6 overflow-y-auto min-h-0">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/45 dark:bg-black/70 backdrop-blur-xs">
+      <div className="relative w-full max-w-[calc(100vw-1.5rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] flex flex-col bg-[var(--chrome-bg)] text-[var(--control-text)] rounded-xl shadow-xl border border-[var(--control-border)] overflow-hidden">
+        <div className="p-4 sm:p-5 overflow-y-auto min-h-0">
           <div className="flex items-start gap-3 sm:gap-4">
             <div
-              className={`p-2.5 rounded-2xl shrink-0 border ${
+              className={`p-2 sm:p-2.5 rounded-lg shrink-0 ${
                 confirmVariant === 'danger'
-                  ? 'bg-red-50/85 border-red-200/80 text-red-600 dark:bg-red-950/60 dark:border-red-500/30 dark:text-red-400'
-                  : 'bg-blue-50/85 border-blue-200/80 text-blue-600 dark:bg-sky-950/60 dark:border-sky-500/30 dark:text-sky-400'
+                  ? 'bg-red-50 text-red-600 dark:bg-red-950/60 dark:text-red-400'
+                  : 'bg-[var(--control-bg)] text-[var(--control-text)]'
               }`}
             >
               <AlertTriangle className="w-5 h-5" />
@@ -55,19 +51,19 @@ export function ConfirmDialog({
               onClick={onCancel}
               disabled={isLoading}
               aria-label="Close dialog"
-              className="text-[var(--control-muted)] hover:text-[var(--control-text)] hover:bg-slate-900/5 dark:hover:bg-white/10 p-1.5 -mr-1 -mt-1 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-full cursor-pointer shrink-0 transition-colors"
+              className="text-[var(--control-muted)] hover:text-[var(--control-text)] p-1.5 -mr-1 -mt-1 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-md cursor-pointer shrink-0"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        <div className="flex flex-wrap sm:flex-nowrap items-center justify-end gap-2.5 sm:gap-3 px-5 sm:px-6 py-3.5 bg-white/35 dark:bg-slate-900/40 border-t border-[var(--chrome-divider)] shrink-0">
+        <div className="flex flex-wrap sm:flex-nowrap items-center justify-end gap-2.5 sm:gap-3 px-4 sm:px-5 py-3 sm:py-3.5 bg-[var(--chrome-elevated)] border-t border-[var(--chrome-border)] shrink-0">
           <button
             type="button"
             onClick={onCancel}
             disabled={isLoading}
-            className="mk-glass-btn-secondary min-h-[40px] sm:min-h-[36px] px-4 py-1.5 text-xs font-semibold cursor-pointer touch-manipulation"
+            className="min-h-[40px] sm:min-h-0 px-4 py-2 text-xs font-medium text-[var(--control-text)] bg-[var(--control-bg)] border border-[var(--control-border)] rounded-lg hover:bg-[var(--control-bg-hover)] cursor-pointer touch-manipulation"
           >
             Cancel
           </button>
@@ -75,8 +71,10 @@ export function ConfirmDialog({
             type="button"
             onClick={onConfirm}
             disabled={isLoading}
-            className={`min-h-[40px] sm:min-h-[36px] px-4.5 py-1.5 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer touch-manipulation disabled:opacity-60 ${
-              confirmVariant === 'danger' ? 'mk-glass-btn-danger' : 'mk-glass-btn-primary'
+            className={`min-h-[40px] sm:min-h-0 px-4 py-2 text-xs font-medium text-white rounded-lg flex items-center justify-center gap-2 cursor-pointer touch-manipulation ${
+              confirmVariant === 'danger'
+                ? 'bg-red-600 hover:bg-red-700'
+                : 'bg-blue-600 hover:bg-blue-500'
             }`}
           >
             {isLoading && (

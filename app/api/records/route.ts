@@ -15,7 +15,9 @@ import {
   mockInsertWorkspaceRow,
   mockDeleteWorkspaceRow,
   mockInsertWorkspaceColumn,
-  mockDeleteWorkspaceColumn
+  mockDeleteWorkspaceColumn,
+  mockReorderWorkspaceRows,
+  mockReorderWorkspaceColumns
 } from '@/lib/mockStore';
 import { verifyActiveStaff } from '@/lib/auth';
 import {
@@ -36,7 +38,9 @@ import {
   insertWorkspaceRowRpc,
   deleteWorkspaceRowRpc,
   insertWorkspaceColumnRpc,
-  deleteWorkspaceColumnRpc
+  deleteWorkspaceColumnRpc,
+  reorderWorkspaceRowsRpc,
+  reorderWorkspaceColumnsRpc
 } from '@/lib/store';
 
 function isValidWorkspace(val: unknown): val is WorkspaceType {
@@ -538,10 +542,88 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // 13. Reorder contiguous data row slice [startRowIndex..endRowIndex] to targetRowIndex
+    if (action === 'reorder_rows') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      const startRowIndex = body.startRowIndex;
+      const endRowIndex = body.endRowIndex ?? startRowIndex;
+      const targetRowIndex = body.targetRowIndex;
+
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+      if (
+        !isNonNegativeInt(startRowIndex) ||
+        !isNonNegativeInt(endRowIndex) ||
+        !isNonNegativeInt(targetRowIndex) ||
+        endRowIndex < startRowIndex ||
+        endRowIndex >= 100000 ||
+        targetRowIndex > 100000
+      ) {
+        return NextResponse.json({ error: 'Invalid row reorder range or target index.' }, { status: 400 });
+      }
+
+      const result = useMock
+        ? mockReorderWorkspaceRows(workspaceParam, sheetId, startRowIndex, endRowIndex, targetRowIndex)
+        : await reorderWorkspaceRowsRpc(
+            supabase!,
+            workspaceParam,
+            sheetId,
+            startRowIndex,
+            endRowIndex,
+            targetRowIndex
+          );
+
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
+    // 14. Reorder contiguous column slice [startColIndex..endColIndex] to targetColIndex
+    if (action === 'reorder_columns') {
+      const sheetId = typeof body.sheetId === 'string' ? body.sheetId.trim() : '';
+      const startColIndex = body.startColIndex;
+      const endColIndex = body.endColIndex ?? startColIndex;
+      const targetColIndex = body.targetColIndex;
+
+      if (!sheetId) {
+        return NextResponse.json({ error: 'sheetId is required.' }, { status: 400 });
+      }
+      if (
+        !isNonNegativeInt(startColIndex) ||
+        !isNonNegativeInt(endColIndex) ||
+        !isNonNegativeInt(targetColIndex) ||
+        endColIndex < startColIndex ||
+        endColIndex >= 256 ||
+        targetColIndex > 256
+      ) {
+        return NextResponse.json({ error: 'Invalid column reorder range or target index.' }, { status: 400 });
+      }
+
+      const result = useMock
+        ? mockReorderWorkspaceColumns(workspaceParam, sheetId, startColIndex, endColIndex, targetColIndex)
+        : await reorderWorkspaceColumnsRpc(
+            supabase!,
+            workspaceParam,
+            sheetId,
+            startColIndex,
+            endColIndex,
+            targetColIndex
+          );
+
+      return NextResponse.json({
+        success: true,
+        workspace: workspaceParam,
+        ...result
+      });
+    }
+
     return NextResponse.json(
       {
         error:
-          'Invalid or unsupported action. Supported actions: create_sheet, rename_sheet, delete_sheet, reorder_sheets, patch_cell, patch_cells_batch, patch_header, save_sheet_layout, insert_row, delete_rows, insert_column, delete_column.'
+          'Invalid or unsupported action. Supported actions: create_sheet, rename_sheet, delete_sheet, reorder_sheets, patch_cell, patch_cells_batch, patch_header, save_sheet_layout, insert_row, delete_rows, insert_column, delete_column, reorder_rows, reorder_columns.'
       },
       { status: 400 }
     );

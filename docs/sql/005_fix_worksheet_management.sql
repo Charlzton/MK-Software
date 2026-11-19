@@ -5,42 +5,31 @@
 -- reordering in Supabase for both Reception and Doctor workspaces.
 --
 -- What this fixes:
---   1. Drops any overloaded signatures that can confuse PostgREST RPC lookup.
---   2. delete_workspace_sheet:
---      - Authenticates active staff and verifies workspace authorization.
---      - Verifies the target worksheet exists in the requested workspace BEFORE
---        deleting any rows.
---      - Prevents deleting the last remaining worksheet in a workspace.
---      - Safely deletes associated workbook_rows, deletes the workbook_sheets
---        record, and re-sequences remaining tab_order values (0..N-1).
---   3. reorder_workspace_sheets:
---      - Authenticates active staff and verifies workspace authorization.
---      - Validates all provided sheet IDs belong to the target workspace.
---      - Atomically updates tab_order for all worksheets in the workspace.
---   4. rename_workspace_sheet:
+--   1. Drops only the exact existing RPC signatures (no broad pg_proc sweep).
+--   2. rename_workspace_sheet:
+--      - Locks all worksheets in the workspace deterministically to prevent
+--        concurrent rename races to the same name.
 --      - Hardened duplicate check, validation, and permission enforcement.
+--   3. delete_workspace_sheet:
+--      - Authenticates active staff and verifies workspace authorization.
+--      - Locks all worksheets in the workspace deterministically BEFORE
+--        checking count > 1 (prevents concurrent deletion of the last sheet).
+--      - Locks associated workbook_rows in deterministic order before delete.
+--      - Safely deletes associated workbook_rows, deletes the workbook_sheets
+--        record, and re-sequences remaining tab_order values (0..N-1) via a
+--        collision-safe two-phase update.
+--   4. reorder_workspace_sheets:
+--      - Authenticates active staff and verifies workspace authorization.
+--      - Validates p_sheet_ids has no NULLs, no duplicates, and matches every
+--        worksheet in the requested workspace 1-to-1 under FOR UPDATE locks.
+--      - Atomically updates tab_order using a collision-safe dynamic two-phase
+--        offset so unique (workspace, tab_order) constraints never fail.
 --   5. Reloads PostgREST schema cache so RPCs are immediately callable.
 -- ============================================================================
 
-DO $$
-DECLARE
-  v_sig text;
-BEGIN
-  FOR v_sig IN
-    SELECT p.oid::regprocedure::text
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'public'
-      AND p.proname IN (
-        'rename_workspace_sheet',
-        'delete_workspace_sheet',
-        'reorder_workspace_sheets'
-      )
-  LOOP
-    EXECUTE 'DROP FUNCTION IF EXISTS ' || v_sig || ';';
-  END LOOP;
-END;
-$$;
+DROP FUNCTION IF EXISTS public.rename_workspace_sheet(text, uuid, text);
+DROP FUNCTION IF EXISTS public.delete_workspace_sheet(text, uuid);
+DROP FUNCTION IF EXISTS public.reorder_workspace_sheets(text, uuid[]);
 
 -- 1. Rename Worksheet RPC
 CREATE OR REPLACE FUNCTION public.rename_workspace_sheet(
@@ -100,6 +89,13 @@ BEGIN
     RAISE EXCEPTION 'INVALID_SHEET_NAME: Worksheet name cannot contain \ / ? * [ ] :';
   END IF;
 
+  -- Lock workspace worksheets in deterministic order to serialize concurrent renames/deletes
+  PERFORM ws.id
+  FROM public.workbook_sheets ws
+  WHERE ws.workspace = p_workspace::public.workspace_type
+  ORDER BY ws.tab_order, ws.id
+  FOR UPDATE;
+
   IF EXISTS (
     SELECT 1
     FROM public.workbook_sheets ws
@@ -145,8 +141,8 @@ DECLARE
   v_staff record;
   v_target_sheet record;
   v_sheet_count integer;
-  v_remaining record;
-  v_new_order integer := 0;
+  v_max_tab_order integer;
+  v_temp_offset integer;
 BEGIN
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN
@@ -178,7 +174,15 @@ BEGIN
     RAISE EXCEPTION 'INVALID_SHEET_ID: p_sheet_id is required.';
   END IF;
 
-  -- Verify target worksheet exists in the authorized workspace FIRST
+  -- Lock ALL worksheets in this workspace deterministically BEFORE counting or deleting
+  -- so concurrent delete/reorder calls cannot race past the last-sheet guard.
+  PERFORM ws.id
+  FROM public.workbook_sheets ws
+  WHERE ws.workspace = p_workspace::public.workspace_type
+  ORDER BY ws.tab_order, ws.id
+  FOR UPDATE;
+
+  -- Verify target worksheet exists in the authorized workspace
   SELECT ws.id, ws.name
   INTO v_target_sheet
   FROM public.workbook_sheets ws
@@ -190,13 +194,21 @@ BEGIN
   END IF;
 
   -- Prevent deleting the last remaining worksheet in this workspace
-  SELECT count(*) INTO v_sheet_count
+  SELECT count(*)::integer, COALESCE(MAX(ws.tab_order), 0)
+  INTO v_sheet_count, v_max_tab_order
   FROM public.workbook_sheets ws
   WHERE ws.workspace = p_workspace::public.workspace_type;
 
   IF v_sheet_count <= 1 THEN
     RAISE EXCEPTION 'BAD_REQUEST: Cannot delete the only remaining worksheet in the % workspace.', p_workspace;
   END IF;
+
+  -- Lock associated rows in canonical order before deleting
+  PERFORM wr.id
+  FROM public.workbook_rows wr
+  WHERE wr.sheet_id = p_sheet_id
+  ORDER BY wr.row_index, wr.id
+  FOR UPDATE;
 
   -- Delete associated rows first
   DELETE FROM public.workbook_rows wr
@@ -207,19 +219,34 @@ BEGIN
   WHERE ws.id = p_sheet_id
     AND ws.workspace = p_workspace::public.workspace_type;
 
-  -- Re-sequence tab_order cleanly (0..N-1) for remaining worksheets in this workspace
-  FOR v_remaining IN
-    SELECT ws.id
+  -- Collision-safe two-phase re-sequence (0..N-1) for remaining worksheets in this workspace
+  v_temp_offset := GREATEST(1000000, v_max_tab_order + 1000);
+
+  WITH ordered AS (
+    SELECT
+      ws.id,
+      (row_number() OVER (ORDER BY ws.tab_order ASC, ws.name ASC, ws.id ASC))::integer AS seq
     FROM public.workbook_sheets ws
     WHERE ws.workspace = p_workspace::public.workspace_type
-    ORDER BY ws.tab_order ASC, ws.name ASC
-  LOOP
-    UPDATE public.workbook_sheets ws
-    SET tab_order = v_new_order
-    WHERE ws.id = v_remaining.id
-      AND ws.workspace = p_workspace::public.workspace_type;
-    v_new_order := v_new_order + 1;
-  END LOOP;
+  )
+  UPDATE public.workbook_sheets ws
+  SET tab_order = v_temp_offset + ordered.seq
+  FROM ordered
+  WHERE ws.id = ordered.id
+    AND ws.workspace = p_workspace::public.workspace_type;
+
+  WITH ordered AS (
+    SELECT
+      ws.id,
+      (row_number() OVER (ORDER BY ws.tab_order ASC, ws.name ASC, ws.id ASC))::integer AS seq
+    FROM public.workbook_sheets ws
+    WHERE ws.workspace = p_workspace::public.workspace_type
+  )
+  UPDATE public.workbook_sheets ws
+  SET tab_order = ordered.seq - 1
+  FROM ordered
+  WHERE ws.id = ordered.id
+    AND ws.workspace = p_workspace::public.workspace_type;
 
   RETURN jsonb_build_object(
     'success', true,
@@ -242,9 +269,13 @@ AS $$
 DECLARE
   v_user_id uuid;
   v_staff record;
-  v_idx integer;
+  v_input_count integer;
+  v_distinct_count integer;
+  v_workspace_sheet_count integer;
+  v_matched_count integer;
+  v_max_tab_order integer;
+  v_temp_offset integer;
   v_updated_count integer := 0;
-  v_row_updated integer := 0;
 BEGIN
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN
@@ -272,32 +303,76 @@ BEGIN
     RAISE EXCEPTION 'FORBIDDEN_ROLE: % cannot modify % workspace.', v_staff.role_text, p_workspace;
   END IF;
 
-  IF p_sheet_ids IS NULL OR coalesce(array_length(p_sheet_ids, 1), 0) = 0 THEN
+  IF p_sheet_ids IS NULL OR coalesce(array_ndims(p_sheet_ids), 0) <> 1 THEN
+    RAISE EXCEPTION 'BAD_REQUEST: p_sheet_ids must be a non-empty 1-dimensional UUID array.';
+  END IF;
+
+  v_input_count := coalesce(array_length(p_sheet_ids, 1), 0);
+  IF v_input_count = 0 THEN
     RAISE EXCEPTION 'BAD_REQUEST: p_sheet_ids array cannot be empty.';
   END IF;
 
-  -- Phase 1: move targeted worksheets into a temporary non-conflicting positive range
-  FOR v_idx IN 1..array_length(p_sheet_ids, 1) LOOP
-    UPDATE public.workbook_sheets ws
-    SET tab_order = 100000 + v_idx
-    WHERE ws.id = p_sheet_ids[v_idx]
-      AND ws.workspace = p_workspace::public.workspace_type;
-
-    GET DIAGNOSTICS v_row_updated = ROW_COUNT;
-    v_updated_count := v_updated_count + v_row_updated;
-  END LOOP;
-
-  IF v_updated_count = 0 THEN
-    RAISE EXCEPTION 'SHEET_NOT_FOUND: No matching worksheets found in % workspace to reorder.', p_workspace;
+  IF EXISTS (
+    SELECT 1
+    FROM unnest(p_sheet_ids) AS u(id)
+    WHERE u.id IS NULL
+  ) THEN
+    RAISE EXCEPTION 'BAD_REQUEST: p_sheet_ids cannot contain NULL entries.';
   END IF;
 
+  SELECT COUNT(DISTINCT u.id)::integer
+  INTO v_distinct_count
+  FROM unnest(p_sheet_ids) AS u(id);
+
+  IF v_distinct_count <> v_input_count THEN
+    RAISE EXCEPTION 'BAD_REQUEST: p_sheet_ids contains duplicate worksheet IDs.';
+  END IF;
+
+  -- Lock ALL worksheets in the workspace deterministically BEFORE validating completeness
+  PERFORM ws.id
+  FROM public.workbook_sheets ws
+  WHERE ws.workspace = p_workspace::public.workspace_type
+  ORDER BY ws.tab_order, ws.id
+  FOR UPDATE;
+
+  SELECT COUNT(*)::integer, COALESCE(MAX(ws.tab_order), 0)
+  INTO v_workspace_sheet_count, v_max_tab_order
+  FROM public.workbook_sheets ws
+  WHERE ws.workspace = p_workspace::public.workspace_type;
+
+  IF v_workspace_sheet_count = 0 THEN
+    RAISE EXCEPTION 'SHEET_NOT_FOUND: No worksheets found in % workspace.', p_workspace;
+  END IF;
+
+  SELECT COUNT(*)::integer
+  INTO v_matched_count
+  FROM public.workbook_sheets ws
+  WHERE ws.workspace = p_workspace::public.workspace_type
+    AND ws.id = ANY(p_sheet_ids);
+
+  IF v_matched_count <> v_input_count OR v_matched_count <> v_workspace_sheet_count THEN
+    RAISE EXCEPTION 'BAD_REQUEST: p_sheet_ids must contain the exact set of % worksheets in % workspace (matched %, supplied %).',
+      v_workspace_sheet_count, p_workspace, v_matched_count, v_input_count;
+  END IF;
+
+  -- Collision-safe two-phase update across all workspace sheets
+  v_temp_offset := GREATEST(1000000, v_max_tab_order + 1000);
+
+  -- Phase 1: move all worksheets into a disjoint temporary positive range
+  UPDATE public.workbook_sheets ws
+  SET tab_order = v_temp_offset + u.ord::integer
+  FROM unnest(p_sheet_ids) WITH ORDINALITY AS u(id, ord)
+  WHERE ws.id = u.id
+    AND ws.workspace = p_workspace::public.workspace_type;
+
   -- Phase 2: assign final sequential tab_order (0..N-1)
-  FOR v_idx IN 1..array_length(p_sheet_ids, 1) LOOP
-    UPDATE public.workbook_sheets ws
-    SET tab_order = v_idx - 1
-    WHERE ws.id = p_sheet_ids[v_idx]
-      AND ws.workspace = p_workspace::public.workspace_type;
-  END LOOP;
+  UPDATE public.workbook_sheets ws
+  SET tab_order = (u.ord - 1)::integer
+  FROM unnest(p_sheet_ids) WITH ORDINALITY AS u(id, ord)
+  WHERE ws.id = u.id
+    AND ws.workspace = p_workspace::public.workspace_type;
+
+  GET DIAGNOSTICS v_updated_count = ROW_COUNT;
 
   RETURN jsonb_build_object(
     'success', true,

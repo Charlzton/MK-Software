@@ -759,4 +759,190 @@ export function mockDeleteWorkspaceColumn(
   };
 }
 
+function remapMovedIndex(
+  oldIdx: number,
+  startIdx: number,
+  endIdx: number,
+  targetIdx: number
+): number {
+  const count = endIdx - startIdx + 1;
+  if (targetIdx < startIdx) {
+    if (oldIdx >= startIdx && oldIdx <= endIdx) return oldIdx - (startIdx - targetIdx);
+    if (oldIdx >= targetIdx && oldIdx < startIdx) return oldIdx + count;
+    return oldIdx;
+  }
+  if (oldIdx >= startIdx && oldIdx <= endIdx) return oldIdx + (targetIdx - endIdx - 1);
+  if (oldIdx > endIdx && oldIdx < targetIdx) return oldIdx - count;
+  return oldIdx;
+}
+
+export function mockReorderWorkspaceRows(
+  workspace: WorkspaceType,
+  sheetId: string,
+  startRowIndex: number,
+  endRowIndex: number,
+  targetRowIndex: number
+): StructuralRowResult {
+  const store = getMockStore();
+  const sheet = findSheetById(store.workbooks[workspace], sheetId);
+  if (
+    startRowIndex < 0 ||
+    endRowIndex < startRowIndex ||
+    endRowIndex >= 100000 ||
+    targetRowIndex < 0 ||
+    targetRowIndex > 100000
+  ) {
+    throw new StoreRpcError(400, 'BAD_REQUEST', 'Invalid row reorder parameters.');
+  }
+
+  if (targetRowIndex >= startRowIndex && targetRowIndex <= endRowIndex + 1) {
+    return {
+      sheetId,
+      rowHeights: { ...(sheet.rowHeights || {}) }
+    };
+  }
+
+  const minAffected = Math.min(startRowIndex, targetRowIndex);
+  const maxAffected = Math.max(endRowIndex, targetRowIndex - 1);
+  const requiredLen = Math.min(100000, Math.max(sheet.rows.length, maxAffected + 1));
+
+  while (sheet.rows.length < requiredLen) {
+    sheet.rows.push([]);
+  }
+
+  const movedCount = endRowIndex - startRowIndex + 1;
+  const movedSlice = sheet.rows.splice(startRowIndex, movedCount);
+  const insertAt = targetRowIndex < startRowIndex ? targetRowIndex : targetRowIndex - movedCount;
+  sheet.rows.splice(insertAt, 0, ...movedSlice);
+
+  // Trim trailing completely empty sparse rows created only by padding past prior length
+  while (sheet.rows.length > 0) {
+    const last = sheet.rows[sheet.rows.length - 1];
+    if (Array.isArray(last) && last.some((c) => c !== '' && c !== null && c !== undefined)) {
+      break;
+    }
+    if (sheet.rows.length - 1 < minAffected) break;
+    sheet.rows.pop();
+  }
+
+  const nextRowVersions: Record<number, number> = {};
+  for (const [k, v] of Object.entries(sheet.rowVersions)) {
+    const idx = Number(k);
+    nextRowVersions[remapMovedIndex(idx, startRowIndex, endRowIndex, targetRowIndex)] = v;
+  }
+  sheet.rowVersions = nextRowVersions;
+
+  const nextCellVersions: Record<number, Record<number, number>> = {};
+  for (const [k, v] of Object.entries(sheet.cellVersions)) {
+    const idx = Number(k);
+    nextCellVersions[remapMovedIndex(idx, startRowIndex, endRowIndex, targetRowIndex)] = v;
+  }
+  sheet.cellVersions = nextCellVersions;
+
+  if (sheet.rowUpdatedAt) {
+    const nextUpdatedAt: Record<number, string> = {};
+    for (const [k, v] of Object.entries(sheet.rowUpdatedAt)) {
+      const idx = Number(k);
+      nextUpdatedAt[remapMovedIndex(idx, startRowIndex, endRowIndex, targetRowIndex)] = v;
+    }
+    sheet.rowUpdatedAt = nextUpdatedAt;
+  }
+
+  const nextRowHeights: Record<number, number> = {};
+  for (const [k, v] of Object.entries(sheet.rowHeights || {})) {
+    const gridIdx = Number(k);
+    if (gridIdx === 0) {
+      nextRowHeights[0] = v;
+    } else if (gridIdx >= 1) {
+      const nextDataIdx = remapMovedIndex(gridIdx - 1, startRowIndex, endRowIndex, targetRowIndex);
+      if (nextDataIdx >= 0 && nextDataIdx + 1 < 100000) {
+        nextRowHeights[nextDataIdx + 1] = v;
+      }
+    }
+  }
+  sheet.rowHeights = nextRowHeights;
+  store.lastSavedAt[workspace] = new Date().toISOString();
+
+  return {
+    sheetId,
+    rowHeights: { ...nextRowHeights }
+  };
+}
+
+export function mockReorderWorkspaceColumns(
+  workspace: WorkspaceType,
+  sheetId: string,
+  startColIndex: number,
+  endColIndex: number,
+  targetColIndex: number
+): StructuralColResult {
+  const store = getMockStore();
+  const sheet = findSheetById(store.workbooks[workspace], sheetId);
+  if (
+    startColIndex < 0 ||
+    endColIndex < startColIndex ||
+    endColIndex >= 256 ||
+    targetColIndex < 0 ||
+    targetColIndex > 256
+  ) {
+    throw new StoreRpcError(400, 'BAD_REQUEST', 'Invalid column reorder parameters.');
+  }
+
+  if (targetColIndex >= startColIndex && targetColIndex <= endColIndex + 1) {
+    return {
+      sheetId,
+      headers: [...sheet.headers],
+      headerVersion: sheet.headerVersion,
+      columnWidths: { ...(sheet.columnWidths || {}) }
+    };
+  }
+
+  const movedCount = endColIndex - startColIndex + 1;
+  const insertAt = targetColIndex < startColIndex ? targetColIndex : targetColIndex - movedCount;
+  const requiredHeaderLen = Math.min(256, Math.max(sheet.headers.length, endColIndex + 1, targetColIndex));
+  while (sheet.headers.length < requiredHeaderLen) {
+    sheet.headers.push('');
+  }
+  const movedHeaders = sheet.headers.splice(startColIndex, movedCount);
+  sheet.headers.splice(insertAt, 0, ...movedHeaders);
+  sheet.headerVersion += 1;
+
+  const minAffected = Math.min(startColIndex, targetColIndex);
+  for (let r = 0; r < sheet.rows.length; r++) {
+    const row = sheet.rows[r];
+    if (Array.isArray(row) && row.length > minAffected) {
+      const requiredRowLen = Math.min(256, Math.max(row.length, endColIndex + 1, targetColIndex));
+      while (row.length < requiredRowLen) {
+        row.push('');
+      }
+      const movedCells = row.splice(startColIndex, movedCount);
+      row.splice(insertAt, 0, ...movedCells);
+    }
+    const cv = sheet.cellVersions[r];
+    if (cv) {
+      const nextCv: Record<number, number> = {};
+      for (const [k, v] of Object.entries(cv)) {
+        const nextC = remapMovedIndex(Number(k), startColIndex, endColIndex, targetColIndex);
+        if (nextC >= 0 && nextC < 256) nextCv[nextC] = v;
+      }
+      sheet.cellVersions[r] = nextCv;
+    }
+    sheet.rowVersions[r] = (sheet.rowVersions[r] ?? 0) + 1;
+  }
+
+  const nextWidths: Record<number, number> = {};
+  for (const [k, v] of Object.entries(sheet.columnWidths || {})) {
+    const nextC = remapMovedIndex(Number(k), startColIndex, endColIndex, targetColIndex);
+    if (nextC >= 0 && nextC < 256) nextWidths[nextC] = v;
+  }
+  sheet.columnWidths = nextWidths;
+  store.lastSavedAt[workspace] = new Date().toISOString();
+
+  return {
+    sheetId,
+    headers: [...sheet.headers],
+    headerVersion: sheet.headerVersion,
+    columnWidths: { ...nextWidths }
+  };
+}
 

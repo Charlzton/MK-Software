@@ -12,21 +12,7 @@ ALTER TABLE public.workbook_sheets
 ALTER TABLE public.workbook_sheets
   ADD COLUMN IF NOT EXISTS row_heights jsonb NOT NULL DEFAULT '{}'::jsonb;
 
-DO $$
-DECLARE
-  v_sig text;
-BEGIN
-  FOR v_sig IN
-    SELECT p.oid::regprocedure::text
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'public'
-      AND p.proname = 'save_workspace_sheet_layout'
-  LOOP
-    EXECUTE 'DROP FUNCTION IF EXISTS ' || v_sig || ';';
-  END LOOP;
-END;
-$$;
+DROP FUNCTION IF EXISTS public.save_workspace_sheet_layout(text, uuid, jsonb, jsonb);
 
 CREATE OR REPLACE FUNCTION public.save_workspace_sheet_layout(
   p_workspace text,
@@ -48,6 +34,7 @@ DECLARE
   v_entry record;
   v_idx integer;
   v_num numeric;
+  v_raw_text text;
 BEGIN
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN
@@ -81,11 +68,14 @@ BEGIN
 
   IF p_column_widths IS NOT NULL AND jsonb_typeof(p_column_widths) = 'object' THEN
     FOR v_entry IN SELECT key, value FROM jsonb_each(p_column_widths) LOOP
-      IF v_entry.key ~ '^[0-9]+$' AND jsonb_typeof(v_entry.value) = 'number' THEN
-        v_idx := v_entry.key::integer;
-        v_num := round((v_entry.value::text)::numeric);
-        IF v_idx >= 0 AND v_idx < 256 AND v_num >= 40 AND v_num <= 800 THEN
-          v_clean_cols := v_clean_cols || jsonb_build_object(v_entry.key, v_num);
+      IF v_entry.key ~ '^[0-9]{1,6}$' AND jsonb_typeof(v_entry.value) = 'number' THEN
+        v_raw_text := btrim(v_entry.value #>> '{}');
+        IF length(v_raw_text) <= 32 AND v_raw_text ~ '^[0-9]{1,6}(\.[0-9]+)?$' THEN
+          v_idx := v_entry.key::integer;
+          v_num := round(v_raw_text::numeric);
+          IF v_idx >= 0 AND v_idx < 256 AND v_num >= 40 AND v_num <= 800 THEN
+            v_clean_cols := v_clean_cols || jsonb_build_object(v_idx::text, v_num);
+          END IF;
         END IF;
       END IF;
     END LOOP;
@@ -93,11 +83,14 @@ BEGIN
 
   IF p_row_heights IS NOT NULL AND jsonb_typeof(p_row_heights) = 'object' THEN
     FOR v_entry IN SELECT key, value FROM jsonb_each(p_row_heights) LOOP
-      IF v_entry.key ~ '^[0-9]+$' AND jsonb_typeof(v_entry.value) = 'number' THEN
-        v_idx := v_entry.key::integer;
-        v_num := round((v_entry.value::text)::numeric);
-        IF v_idx >= 0 AND v_idx < 100000 AND v_num >= 24 AND v_num <= 600 THEN
-          v_clean_rows := v_clean_rows || jsonb_build_object(v_entry.key, v_num);
+      IF v_entry.key ~ '^[0-9]{1,6}$' AND jsonb_typeof(v_entry.value) = 'number' THEN
+        v_raw_text := btrim(v_entry.value #>> '{}');
+        IF length(v_raw_text) <= 32 AND v_raw_text ~ '^[0-9]{1,6}(\.[0-9]+)?$' THEN
+          v_idx := v_entry.key::integer;
+          v_num := round(v_raw_text::numeric);
+          IF v_idx >= 0 AND v_idx < 100000 AND v_num >= 24 AND v_num <= 600 THEN
+            v_clean_rows := v_clean_rows || jsonb_build_object(v_idx::text, v_num);
+          END IF;
         END IF;
       END IF;
     END LOOP;
@@ -117,8 +110,8 @@ BEGIN
   RETURN jsonb_build_object(
     'success', true,
     'sheetId', v_sheet.id,
-    'columnWidths', v_sheet.column_widths,
-    'rowHeights', v_sheet.row_heights
+    'columnWidths', COALESCE(v_sheet.column_widths, '{}'::jsonb),
+    'rowHeights', COALESCE(v_sheet.row_heights, '{}'::jsonb)
   );
 END;
 $$;

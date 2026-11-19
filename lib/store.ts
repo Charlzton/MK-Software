@@ -115,6 +115,14 @@ function mapRpcError(error: { code?: string; message?: string; details?: string;
         rawMessage
       );
     }
+    if (/reorder_workspace_(rows|columns)/i.test(rawMessage)) {
+      return new StoreRpcError(
+        501,
+        'MIGRATION_REQUIRED',
+        'Row and column rearrangement requires running docs/sql/008_row_column_rearrangement.sql in Supabase SQL Editor.',
+        rawMessage
+      );
+    }
     if (/(insert|delete)_workspace_(row|column)/i.test(rawMessage)) {
       return new StoreRpcError(
         501,
@@ -1075,6 +1083,64 @@ export async function deleteWorkspaceColumnRpc(
     p_workspace: workspace,
     p_sheet_id: sheetId,
     p_col_index: colIndex
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  return {
+    sheetId: String(res.sheetId ?? sheetId),
+    headers: Array.isArray(res.headers)
+      ? res.headers.map((h) => (typeof h === 'string' ? h : String(h ?? '')))
+      : [],
+    headerVersion: Number(res.headerVersion ?? 1),
+    columnWidths: normalizeDimensionMap(res.columnWidths ?? {}, 256, 40, 800)
+  };
+}
+
+export async function reorderWorkspaceRowsRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  startRowIndex: number,
+  endRowIndex: number,
+  targetRowIndex: number
+): Promise<StructuralRowResult> {
+  const { data, error } = await supabase.rpc('reorder_workspace_rows', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_start_row_index: startRowIndex,
+    p_end_row_index: endRowIndex,
+    p_target_row_index: targetRowIndex
+  });
+
+  if (error) {
+    throw mapRpcError(error);
+  }
+
+  const res = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  return {
+    sheetId: String(res.sheetId ?? sheetId),
+    rowHeights: normalizeDimensionMap(res.rowHeights ?? {}, 100000, 24, 600)
+  };
+}
+
+export async function reorderWorkspaceColumnsRpc(
+  supabase: SupabaseClient,
+  workspace: WorkspaceType,
+  sheetId: string,
+  startColIndex: number,
+  endColIndex: number,
+  targetColIndex: number
+): Promise<StructuralColResult> {
+  const { data, error } = await supabase.rpc('reorder_workspace_columns', {
+    p_workspace: workspace,
+    p_sheet_id: sheetId,
+    p_start_col_index: startColIndex,
+    p_end_col_index: endColIndex,
+    p_target_col_index: targetColIndex
   });
 
   if (error) {

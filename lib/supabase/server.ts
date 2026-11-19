@@ -49,11 +49,8 @@ export async function createClient() {
       setAll(cookiesToSet) {
         try {
           cookiesToSet.forEach(({ name, value, options }) => {
-            const sessionCookieOptions = { ...options };
-            delete sessionCookieOptions.maxAge;
-            delete sessionCookieOptions.expires;
             cookieStore.set(name, value, {
-              ...sessionCookieOptions,
+              ...options,
               ...(iframeCookieOptions || {})
             });
           });

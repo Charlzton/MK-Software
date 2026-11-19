@@ -168,10 +168,10 @@ export function SpreadsheetContextMenu({
   if (!menu) return null;
 
   const itemClass =
-    'w-full text-left px-3 py-2 sm:py-1.5 hover:bg-white/65 dark:hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed flex items-center gap-2.5 cursor-pointer touch-manipulation text-xs font-medium text-[var(--control-text)] transition-colors duration-100';
+    'w-full text-left px-3 py-2 sm:py-1.5 hover:bg-[var(--control-bg-hover)] disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed flex items-center gap-2.5 cursor-pointer touch-manipulation text-xs font-medium text-[var(--control-text)] transition-colors duration-75';
 
   const dangerItemClass =
-    'w-full text-left px-3 py-2 sm:py-1.5 hover:bg-red-500/12 dark:hover:bg-red-500/20 text-red-600 dark:text-red-400 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed flex items-center gap-2.5 cursor-pointer touch-manipulation text-xs font-medium transition-colors duration-100';
+    'w-full text-left px-3 py-2 sm:py-1.5 hover:bg-red-50 dark:hover:bg-red-950/60 text-red-600 dark:text-red-400 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed flex items-center gap-2.5 cursor-pointer touch-manipulation text-xs font-medium transition-colors duration-75';
 
   const headerTitle =
     menu.kind === 'tab'
@@ -194,9 +194,9 @@ export function SpreadsheetContextMenu({
         top: coords?.top ?? menu.y,
         visibility: coords ? 'visible' : 'hidden'
       }}
-      className="fixed z-[90] w-52 max-w-[calc(100vw-16px)] max-h-[calc(100dvh-16px)] overflow-y-auto mk-glass-panel rounded-[18px] py-1.5 text-xs text-[var(--control-text)] font-sans select-none"
+      className="fixed z-[90] w-52 max-w-[calc(100vw-16px)] max-h-[calc(100dvh-16px)] overflow-y-auto bg-[var(--chrome-bg)] border border-[var(--control-border)] rounded-xl shadow-2xl py-1 text-xs text-[var(--control-text)] font-sans select-none"
     >
-      <div className="px-3 py-1.5 font-semibold text-[10px] uppercase tracking-wider text-[var(--control-muted)] border-b border-[var(--chrome-divider)] truncate">
+      <div className="px-3 py-1.5 font-semibold text-[10px] uppercase tracking-wider text-[var(--control-muted)] border-b border-[var(--chrome-border)] truncate">
         {headerTitle}
       </div>
 
@@ -232,7 +232,7 @@ export function SpreadsheetContextMenu({
             <ClipboardPaste className="w-3.5 h-3.5 text-[var(--control-muted)] shrink-0" />
             <span>Paste</span>
           </button>
-          <div className="my-1 border-t border-[var(--chrome-divider)]" />
+          <div className="my-1 border-t border-[var(--chrome-border)]" />
           <button
             type="button"
             role="menuitem"
@@ -248,7 +248,7 @@ export function SpreadsheetContextMenu({
             role="menuitem"
             disabled={isBusy}
             onClick={() => onAction('cell_select')}
-            className={`${itemClass} border-t border-[var(--chrome-divider)] mt-1 pt-2 sm:pt-1.5`}
+            className={`${itemClass} border-t border-[var(--chrome-border)] mt-1 pt-2 sm:pt-1.5`}
           >
             <MousePointerClick className="w-3.5 h-3.5 text-[var(--control-muted)] shrink-0" />
             <span>Select Cell</span>
@@ -268,7 +268,7 @@ export function SpreadsheetContextMenu({
             <MousePointerClick className="w-3.5 h-3.5 text-[var(--control-muted)] shrink-0" />
             <span>{menu.endRow > menu.startRow ? 'Select Rows' : 'Select Row'}</span>
           </button>
-          <div className="my-1 border-t border-[var(--chrome-divider)]" />
+          <div className="my-1 border-t border-[var(--chrome-border)]" />
           <button
             type="button"
             role="menuitem"
@@ -300,7 +300,7 @@ export function SpreadsheetContextMenu({
             <ClipboardPaste className="w-3.5 h-3.5 text-[var(--control-muted)] shrink-0" />
             <span>{menu.endRow > menu.startRow ? 'Paste Rows' : 'Paste Row'}</span>
           </button>
-          <div className="my-1 border-t border-[var(--chrome-divider)]" />
+          <div className="my-1 border-t border-[var(--chrome-border)]" />
           <button
             type="button"
             role="menuitem"
@@ -322,7 +322,7 @@ export function SpreadsheetContextMenu({
             <ArrowDown className="w-3.5 h-3.5 text-[var(--control-muted)] shrink-0" />
             <span>Insert Row Below</span>
           </button>
-          <div className="my-1 border-t border-[var(--chrome-divider)]" />
+          <div className="my-1 border-t border-[var(--chrome-border)]" />
           <button
             type="button"
             role="menuitem"
@@ -349,7 +349,7 @@ export function SpreadsheetContextMenu({
             <MousePointerClick className="w-3.5 h-3.5 text-[var(--control-muted)] shrink-0" />
             <span>Select Column</span>
           </button>
-          <div className="my-1 border-t border-[var(--chrome-divider)]" />
+          <div className="my-1 border-t border-[var(--chrome-border)]" />
           <button
             type="button"
             role="menuitem"
@@ -380,7 +380,7 @@ export function SpreadsheetContextMenu({
             <ClipboardPaste className="w-3.5 h-3.5 text-[var(--control-muted)] shrink-0" />
             <span>Paste Column</span>
           </button>
-          <div className="my-1 border-t border-[var(--chrome-divider)]" />
+          <div className="my-1 border-t border-[var(--chrome-border)]" />
           <button
             type="button"
             role="menuitem"
@@ -411,7 +411,7 @@ export function SpreadsheetContextMenu({
             <SlidersHorizontal className="w-3.5 h-3.5 text-[var(--control-muted)] shrink-0" />
             <span>Resize Column...</span>
           </button>
-          <div className="my-1 border-t border-[var(--chrome-divider)]" />
+          <div className="my-1 border-t border-[var(--chrome-border)]" />
           <button
             type="button"
             role="menuitem"
@@ -438,7 +438,7 @@ export function SpreadsheetContextMenu({
             <span>Rename</span>
           </button>
           {(menu.canMoveLeft || menu.canMoveRight) && (
-            <div className="flex items-center border-t border-[var(--chrome-divider)]">
+            <div className="flex items-center border-t border-[var(--chrome-border)]">
               <button
                 type="button"
                 role="menuitem"
@@ -467,7 +467,7 @@ export function SpreadsheetContextMenu({
             role="menuitem"
             disabled={isBusy || !menu.canDelete}
             onClick={() => onAction('tab_delete')}
-            className={`${dangerItemClass} border-t border-[var(--chrome-divider)]`}
+            className={`${dangerItemClass} border-t border-[var(--chrome-border)]`}
           >
             {menu.isDeletingThis ? (
               <>

@@ -282,12 +282,8 @@ function GuidedTourContent({
           width: cardWidth,
           maxHeight: maxCardHeight
         }}
-        className="fixed z-[85] rounded-[22px] mk-glass-panel p-4 sm:p-5 text-[var(--control-text)] flex flex-col overflow-hidden"
+        className="fixed z-[85] rounded-xl bg-[var(--chrome-bg)] border border-[var(--chrome-border)] shadow-2xl p-3.5 sm:p-4 text-[var(--control-text)] flex flex-col overflow-hidden"
       >
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-6 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/95 dark:via-white/35 to-transparent"
-        />
         <div className="flex items-start justify-between gap-2 mb-2 shrink-0">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
             <Sparkles className="w-3.5 h-3.5 text-[var(--selection-ring)] shrink-0" />
@@ -302,7 +298,7 @@ function GuidedTourContent({
             type="button"
             onClick={onClose}
             aria-label="Close guided tour"
-            className="p-1.5 -m-1.5 min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center text-[var(--control-muted)] hover:text-[var(--control-text)] hover:bg-slate-900/5 dark:hover:bg-white/10 rounded-full cursor-pointer shrink-0 touch-manipulation transition-colors"
+            className="p-1.5 -m-1.5 min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center text-[var(--control-muted)] hover:text-[var(--control-text)] rounded cursor-pointer shrink-0 touch-manipulation"
           >
             <X className="w-4 h-4" />
           </button>
@@ -317,7 +313,7 @@ function GuidedTourContent({
           </p>
 
           {currentStep.tips && currentStep.tips.length > 0 && (
-            <ul className="space-y-1 mb-3 bg-white/45 dark:bg-slate-900/45 border border-white/75 dark:border-white/10 rounded-2xl px-3 py-2.5">
+            <ul className="space-y-1 mb-3 bg-[var(--control-bg)] border border-[var(--chrome-border)] rounded-lg px-2.5 py-2">
               {currentStep.tips.map((tip, idx) => (
                 <li
                   key={idx}
@@ -331,11 +327,11 @@ function GuidedTourContent({
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-2 pt-3 mt-0.5 border-t border-[var(--chrome-divider)] shrink-0">
+        <div className="flex items-center justify-between gap-2 pt-2.5 mt-0.5 border-t border-[var(--chrome-border)] shrink-0">
           <button
             type="button"
             onClick={onClose}
-            className="min-h-[34px] sm:min-h-0 text-[11px] font-medium text-[var(--control-muted)] hover:text-[var(--control-text)] px-2.5 py-1 rounded-full hover:bg-white/45 dark:hover:bg-white/10 cursor-pointer touch-manipulation transition-colors"
+            className="min-h-[34px] sm:min-h-0 text-[11px] font-medium text-[var(--control-muted)] hover:text-[var(--control-text)] px-2 py-1 rounded cursor-pointer touch-manipulation"
           >
             Skip Tour
           </button>
@@ -345,7 +341,7 @@ function GuidedTourContent({
               <button
                 type="button"
                 onClick={() => setStepIndex((i) => Math.max(0, i - 1))}
-                className="mk-glass-btn-secondary min-h-[34px] sm:min-h-[30px] px-3 py-1 text-xs font-semibold flex items-center gap-1 cursor-pointer touch-manipulation"
+                className="min-h-[34px] sm:min-h-0 px-2.5 py-1 text-xs font-medium bg-[var(--control-bg)] hover:bg-[var(--control-bg-hover)] border border-[var(--control-border)] text-[var(--control-text)] rounded-md flex items-center gap-1 cursor-pointer touch-manipulation"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
                 <span>Back</span>
@@ -360,7 +356,7 @@ function GuidedTourContent({
                   setStepIndex((i) => i + 1);
                 }
               }}
-              className="mk-glass-btn-primary min-h-[34px] sm:min-h-[30px] px-3.5 py-1 text-xs font-semibold flex items-center gap-1 cursor-pointer touch-manipulation"
+              className="min-h-[34px] sm:min-h-0 px-3 py-1 text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white rounded-md flex items-center gap-1 cursor-pointer touch-manipulation"
             >
               {isLast ? (
                 <>
