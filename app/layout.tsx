@@ -33,7 +33,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'MK Eye Center - Patient Register Portal',
+    title: 'MK Excel',
     description: 'Secure cloud-based patient register and clinic administration portal for MK Eye Center.',
   },
 };
