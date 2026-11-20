@@ -24,7 +24,7 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'MK Eye Center - Patient Register Portal',
+  title: 'MK Excel',
   description: 'Secure cloud-based patient register and clinic administration portal for MK Eye Center, supporting Reception, Doctor workspaces, and Google Sheets synchronization.',
   openGraph: {
     title: 'MK Excel',
